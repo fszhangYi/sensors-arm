@@ -1,0 +1,29 @@
+# Single Elite arm (read + gated write) — mirrors sensors-dcs robot_write
+version: 1
+site: arm-elite-single
+sensors_config: ./sensors_single_elite.yaml
+models_catalog: ./models_catalog.yaml
+dry_run: true
+tcp_xyz: [0.0, 0.0, 0.18]
+
+runtime:
+  viz_port: 6008
+  viz_hz: 15
+
+arms:
+  - id: arm-elite
+    label: "Elite · EC616"
+    model: elite_ec616
+    read_agent: arm
+    write_agent: arm-write
+    home_joints_rad: [0, 0, 0, 0, 0, 0]
+
+agents:
+  - id: arm
+    type: arm
+    sensor_id: arm-elite
+    hz: 50
+  - id: arm-write
+    type: arm_write
+    sensor_id: arm-elite
+    hz: 5

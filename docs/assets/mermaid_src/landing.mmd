@@ -1,0 +1,5 @@
+flowchart LR
+  M["备齐材料<br/>DH 零点 TCP 校验点"] --> K["kinematics<br/>CS66 profile"]
+  K --> S["sensors-arm<br/>注入 profile_id"]
+  S --> V["校验点验 FK"]
+  V --> I["IK 闭环验收"]

@@ -1,0 +1,21 @@
+version: 1
+site: arm-elite-single
+dry_run: true
+
+defaults:
+  arm_write:
+    num_joints: 6
+    robot_tcp_port: 54321
+    monitor_wait_s: 10
+    max_delta_deg: 15.0
+    enforce_soft_limits: true
+
+devices:
+  - id: arm-elite
+    kind: arm_write
+    name: "Elite · Arm (read+write gated)"
+    endpoint: "10.111.34.200"
+    params:
+      robot_ip: "10.111.34.200"
+      num_joints: 6
+      max_delta_deg: 15.0

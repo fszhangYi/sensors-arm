@@ -1,0 +1,560 @@
+{
+  "collected_at_utc": "2026-10-10T07:02:22.432298+00:00",
+  "sdk": "elirobots / elite.EC",
+  "robot_ip": "192.168.1.200",
+  "motion_commanded": false,
+  "identity": {
+    "soft_version": "V3.19.2",
+    "robot_series": 62,
+    "robot_type": null,
+    "servo_version": "轴1对应伺服版本为11\n轴2对应伺服版本为11\n轴3对应伺服版本为11\n轴4对应伺服版本为11\n轴5对应伺服版本为11\n轴6对应伺服版本为11\n",
+    "run_speed_percent": 10,
+    "current_frame": {
+      "name": "JOINT_FRAME",
+      "value": 0
+    },
+    "cycle_mode": {
+      "name": "CYCLE",
+      "value": 1
+    },
+    "tool_num_teach": {
+      "name": "TOOL0",
+      "value": 0
+    },
+    "tool_num_run": {
+      "name": "TOOL0",
+      "value": 0
+    },
+    "user_frame_num": {
+      "name": "USER0",
+      "value": 0
+    },
+    "safety_parameters": [
+      0,
+      [
+        1500,
+        1500
+      ],
+      [
+        90,
+        90
+      ],
+      [
+        100,
+        100
+      ],
+      [
+        100,
+        100
+      ],
+      [
+        100,
+        30
+      ]
+    ],
+    "encoder_precise": 1
+  },
+
+  "dh": {
+    "source": "JSON-RPC getDH; index 0..11 → d1..d12 (Elite EC socket manual)",
+    "unit_note": "controller millimetres (same as teach-pendant 连杆参数)",
+    "d1_to_d12": {
+      "d1": 182,
+      "d2": 184.553,
+      "d3": 478.359,
+      "d4": 126.947,
+      "d5": 361.183,
+      "d6": 116.553,
+      "d7": 116.439,
+      "d8": 109.807,
+      "d9": 0,
+      "d10": 0,
+      "d11": 0,
+      "d12": 0
+    },
+    "values_in_index_order": [
+      182,
+      184.553,
+      478.359,
+      126.947,
+      361.183,
+      116.553,
+      116.439,
+      109.807,
+      0,
+      0,
+      0,
+      0
+    ],
+    "elite_ec616_yaml_mapping_note": "profiles/elite_ec616.yaml link_length_mm is the 6-scalar DH map [d1, a2, a3, d4, d5, d6] ≈ XML LinkLength_1..6, not a raw copy of all eight pendant d's. Typical: a2←d3, a3←d5, d5←d7, d6←d8; wrist d4 combines lateral offsets (d2/d4/d6). Compare this dump to the existing YAML instead of overwriting blindly."
+  },
+  "frames": {
+    "tools_0_7": {
+      "0": {
+        "tcp_pose_deprecated_getTcpPos_deg": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "payload": [
+          0,
+          [
+            0,
+            0,
+            0
+          ]
+        ]
+      },
+      "1": {
+        "tcp_pose_deprecated_getTcpPos_deg": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "payload": [
+          0,
+          [
+            0,
+            0,
+            0
+          ]
+        ]
+      },
+      "2": {
+        "tcp_pose_deprecated_getTcpPos_deg": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "payload": [
+          0,
+          [
+            0,
+            0,
+            0
+          ]
+        ]
+      },
+
+      "3": {
+        "tcp_pose_deprecated_getTcpPos_deg": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "payload": [
+          0,
+          [
+            0,
+            0,
+            0
+          ]
+        ]
+      },
+      "4": {
+        "tcp_pose_deprecated_getTcpPos_deg": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "payload": [
+          0,
+          [
+            0,
+            0,
+            0
+          ]
+        ]
+      },
+      "5": {
+        "tcp_pose_deprecated_getTcpPos_deg": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "payload": [
+          0,
+          [
+            0,
+            0,
+            0
+          ]
+        ]
+      },
+      "6": {
+        "tcp_pose_deprecated_getTcpPos_deg": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "payload": [
+          0,
+          [
+            0,
+            0,
+            0
+          ]
+        ]
+      },
+      "7": {
+        "tcp_pose_deprecated_getTcpPos_deg": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "payload": [
+          0,
+          [
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+
+    "user_0_7_deg": {
+      "0": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "1": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "2": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "3": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "4": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "5": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "6": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "7": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  },
+
+  "current_snapshot": {
+    "joint_deg": [
+      182.42871900826447,
+      -99.0392561983471,
+      102.54003099173553,
+      -88.00092821782178,
+      95.94709158415841,
+      -2.69740099009901
+    ],
+    "motor_pos": [
+      182.42871900826447,
+      -99.0392561983471,
+      102.54003099173553,
+      -88.00092821782178,
+      95.94709158415841,
+      -2.69740099009901
+    ],
+    "actual_joint": [
+      182.42871900826447,
+      -99.0392561983471,
+      102.54003099173553,
+      -88.00092821782178,
+      95.94709158415841,
+      -2.69740099009901
+    ],
+    "flange_base_deg": [
+      -382.5754594848196,
+      -201.92968920852417,
+      512.4905446802253,
+      174.7550783596001,
+      6.1729095965195775,
+      94.55720422317667
+    ],
+    "flange_base_rad": [
+      -382.5754594848196,
+      -201.92968920852417,
+      512.4905446802253,
+      3.05005150195572,
+      0.10773759688722157,
+      1.6503345451751237
+    ],
+    "tcp_base_current_tool_deg": [
+      -382.5754594848196,
+      -201.92968920852417,
+      512.4905446802253,
+      174.7550783596001,
+      6.1729095965195775,
+      94.55720422317667
+    ],
+    "tcp_base_current_tool_rad": [
+      -382.5754594848196,
+      -201.92968920852417,
+      512.4905446802253,
+      3.05005150195572,
+      0.10773759688722157,
+      1.6503345451751237
+    ],
+    "tcp_base_tool0_deg": [
+      -382.5754594848196,
+      -201.92968920852417,
+      512.4905446802253,
+      174.7550783596001,
+      6.1729095965195775,
+      94.55720422317667
+    ],
+    "actual_tcp": [
+      -382.5754594848196,
+      -201.92968920852417,
+      512.4905446802253,
+      3.05005150195572,
+      0.10773759688722155,
+      1.6503345451751237
+    ],
+
+    "flange_minus_tcp": {
+      "delta_xyz_mm_base": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "delta_rxyz_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "delta_xyz_norm_mm": 0.0,
+      "note": "delta_xyz_mm_base is TCP origin minus flange origin in the base frame (not necessarily the tool-frame [0,0,L] offset). Use controller poseMul/poseInv for a proper T_flange_tool."
+    }
+  },
+  "controller_fk_ik": {
+    "note": "positiveKinematic / inverseKinematic / inverseKinematicAll are controller math on the current numbers only — they do not move the arm.",
+    "fk_from_current_joints_deg": [
+      -382.5754594848196,
+      -201.92968920852417,
+      512.4905446802253,
+      174.7550783596001,
+      6.172909596519577,
+      94.55720422317667
+    ],
+    "fk_vs_flange_abs_err": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      8.881784197001252e-16,
+      0.0
+    ],
+    "fk_vs_tcp_abs_err": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      8.881784197001252e-16,
+      0.0
+    ],
+    "fk_matches_hint": "If FK error vs flange is tiny and vs TCP is large, controller positiveKinematic is flange-referenced (typical).",
+    "ik_flange_seed_current_joints": [
+      182.42871900826444,
+      -99.03925619834712,
+      102.54003099173553,
+      -88.00092821782174,
+      95.9470915841584,
+      -2.6974009900990286
+    ],
+    "ik_all_flange": null,
+    "ik_tcp_seed_current_joints": [
+      182.42871900826444,
+      -99.03925619834712,
+      102.54003099173553,
+      -88.00092821782174,
+      95.9470915841584,
+      -2.6974009900990286
+    ],
+
+    "T_flange_tool_via_poseMul_deg": [
+      -1.9895196601282805e-13,
+      -5.684341886080802e-14,
+      1.1368683772161603e-13,
+      -1.5902773407317544e-15,
+      2.703471479243983e-14,
+      2.5842006786891017e-15
+    ]
+  },
+  "monitor_8056": {
+    "ready": true,
+    "machinePos": [
+      182.42871900826447,
+      -99.0392561983471,
+      102.54003099173553,
+      -88.00092821782178,
+      95.94709158415841,
+      -2.69740099009901,
+      0.0,
+      0.0
+    ],
+    "machinePose": [
+      -382.5754594848196,
+      -201.92968920852417,
+      512.4905446802253,
+      3.05005150195572,
+      0.10773759688722155,
+      1.6503345451751237
+    ],
+    "machineFlangePose": [
+      -382.5754594848196,
+      -201.92968920852417,
+      512.4905446802253,
+      3.05005150195572,
+      0.10773759688722157,
+      1.6503345451751237
+    ],
+    "machineUserPose": [
+      -382.5754594848196,
+      -201.92968920852417,
+      512.4905446802253,
+      3.05005150195572,
+      0.10773759688722155,
+      1.6503345451751237
+    ],
+    "machineUserFlangePose": [
+      -382.5754594848196,
+      -201.92968920852417,
+      512.4905446802253,
+      3.05005150195572,
+      0.10773759688722157,
+      1.6503345451751237
+    ],
+    "robotState": 0,
+    "robotMode": 2
+  },
+
+  "profile_hints": {
+    "id": "elite_ec616",
+    "link_length_mm_from_getDH_not_1to1": [
+      182,
+      184.553,
+      478.359,
+      126.947,
+      361.183,
+      116.553,
+      116.439,
+      109.807,
+      0,
+      0,
+      0,
+      0
+    ],
+    "one_teach_pose_candidate": {
+      "index": 1,
+      "joint_deg": [
+        182.42871900826447,
+        -99.0392561983471,
+        102.54003099173553,
+        -88.00092821782178,
+        95.94709158415841,
+        -2.69740099009901
+      ],
+      "position_mm": [
+        -382.5754594848196,
+        -201.92968920852417,
+        512.4905446802253
+      ],
+      "orientation_rxyz_deg": [
+        174.7550783596001,
+        6.1729095965195775,
+        94.55720422317667
+      ],
+      "source": "current pose at collection time (flange, unit_type=deg)"
+    },
+    "default_tcp_xyz_m_from_poseMul": [
+      -1.9895196601282806e-16,
+      -5.684341886080802e-17,
+      1.1368683772161603e-16
+    ],
+    "soft_limits_deg": null,
+    "soft_limits_note": "elirobots / EC JSON-RPC has no get-soft-limit API; keep pendant values (J3 ±156°, others ±360° on the hik EC616 cell).",
+    "joint_offset_deg_note": "SDK does not expose URDF-style joint_offset. Keep YAML [0, -90, 0, -90, 180, 0] unless a new teach calibration says otherwise."
+  },
+  "errors": [
+    {
+      "label": "robot_type",
+      "error": "ValueError: 16 is not a valid RobotType"
+    },
+    {
+      "label": "inverseKinematicAll_flange",
+      "error": [
+        false,
+        "Failed to inverse kinematic, rx,ry or rz in targetPose parameters out of range.",
+        1
+      ]
+    }
+  ]
+}

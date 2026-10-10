@@ -1,0 +1,11 @@
+flowchart LR
+  subgraph FK["正运动学 FK"]
+    A1["读关节"] --> A2["ArmAgent<br/>model=elite_cs66"]
+    A2 --> A3["arm_pose<br/>cartesian_payload"]
+    A3 --> A4["fk_flange<br/>kin_cfg=CS66"]
+  end
+  subgraph IK["逆运动学 IK"]
+    B1["POST /api/arm/ik"] --> B2["runtime.arm_ik"]
+    B2 --> B3["xyzrpy_to_joints_rad"]
+    B3 --> B4["ik_flange<br/>kin_cfg=CS66"]
+  end

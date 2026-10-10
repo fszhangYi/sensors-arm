@@ -1,0 +1,58 @@
+# Multi-arm visualization profiles.
+# Add new brands/products here; bind URDF under src/sensors_arm/static/models/.
+models:
+  elite_ec616:
+    brand: Elite
+    product: EC616
+    num_joints: 6
+    backend: elite
+    urdf: /assets/models/ec616/ec616.urdf?v=ee-full-1
+    joint_names: [Joint1, Joint2, Joint3, Joint4, Joint5, Joint6]
+    joint_offset_rad: [0.0, -1.57079632679, 0.0, -1.57079632679, 3.14159265359, 0.0]
+    joint_signs: [1, 1, 1, 1, 1, 1]
+    mirror_y: true
+    notes: Mesh linked from sensors-dcs static/models/ec616
+
+  # Elite EC66 — optional; ROS description from Elite-Robots/ROS.
+  elite_ec66:
+    brand: Elite
+    product: EC66
+    num_joints: 6
+    backend: elite
+    urdf: /assets/models/ec66/ec66.urdf?v=elite-ros-1
+    joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
+    joint_offset_rad: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    joint_signs: [1, 1, 1, 1, 1, 1]
+    mirror_y: false
+    notes: Meshes from Elite-Robots/ROS elite_description/meshes/ec66.
+
+  # Elite CS66 (口语 ES66). Local archive: CS66urdf.rar → static/models/cs66/
+  # Control: hik-sensors arm_cs_write + elite_cs_sdk (NOT elirobots / arm_write).
+  elite_cs66:
+    brand: Elite
+    product: CS66
+    num_joints: 6
+    backend: elite
+    kinematics: cs66_kinematics
+    kinematics_profile: elite_cs66
+    urdf: /assets/models/cs66/cs66.urdf?v=cs66-ag95-1
+    joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
+    joint_offset_rad: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    joint_signs: [1, 1, 1, 1, 1, 1]
+    mirror_y: false
+    notes: >-
+      From sensors-arm/CS66urdf.rar (SolidWorks export CS66urdf).
+      FK/IK uses sensors.cs66_kinematics profile elite_cs66 (not sensors.kinematics).
+
+  # Placeholder for a second brand — joint bars only until a URDF is added.
+  stub_6dof:
+    brand: Stub
+    product: Sim6
+    num_joints: 6
+    backend: stub
+    urdf: null
+    joint_names: [Joint1, Joint2, Joint3, Joint4, Joint5, Joint6]
+    joint_offset_rad: [0, 0, 0, 0, 0, 0]
+    joint_signs: [1, 1, 1, 1, 1, 1]
+    mirror_y: false
+    notes: No mesh yet; use for layout / second-arm dry-run demos

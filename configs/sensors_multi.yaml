@@ -1,0 +1,57 @@
+# hik-sensors devices — Elite EC616 (A, elirobots) + Elite CS66 (B, elite_cs_sdk)
+
+version: 1
+site: arm-lab-multi
+dry_run: true
+
+defaults:
+  # EC series — elirobots / elite.EC
+  arm_write:
+    num_joints: 6
+    robot_tcp_port: 54321
+    monitor_wait_s: 10
+    max_delta_deg: 15.0
+    enforce_soft_limits: true
+    tt_t: 2
+    tt_response_enable: 0
+  arm_read:
+    num_joints: 6
+    robot_tcp_port: 54321
+    monitor_wait_s: 10
+  # CS series — elite_cs_sdk / EliteDriver (not elirobots)
+  arm_cs_write:
+    num_joints: 6
+    primary_port: 30001
+    robot_tcp_port: 30001
+    max_delta_deg: 15.0
+    enforce_soft_limits: true
+    headless_mode: true
+    servoj_timeout_ms: 100
+  arm_cs_read:
+    num_joints: 6
+    primary_port: 30001
+    robot_tcp_port: 30001
+
+devices:
+  - id: arm-a
+    kind: arm_write
+    name: "Elite EC616 · A"
+    endpoint: "10.111.34.200"
+    params:
+      robot_ip: "10.111.34.200"
+      num_joints: 6
+      max_delta_deg: 15.0
+
+  # Cell B — Elite CS66 / ES66 (CS SDK; distinct from EC arm_write)
+  - id: arm-b
+    kind: arm_cs_write
+    name: "Elite CS66 · B"
+    endpoint: "10.111.34.201"
+    params:
+      robot_ip: "10.111.34.201"
+      num_joints: 6
+      max_delta_deg: 15.0
+      primary_port: 30001
+      headless_mode: true
+      # Live feedback (optional): path to RTSI output recipe file
+      # rtsi_output_recipe: /path/to/rtsi_output.txt

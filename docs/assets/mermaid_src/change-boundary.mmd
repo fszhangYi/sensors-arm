@@ -1,0 +1,5 @@
+flowchart LR
+  A["models_catalog<br/>elite_cs66"] --> B["sensors-arm<br/>arm_pose runtime"]
+  B --> C["get_kinematic_config<br/>profile_id"]
+  C --> D["fk_flange / ik_flange"]
+  D --> E["dh.py 链式运算"]
