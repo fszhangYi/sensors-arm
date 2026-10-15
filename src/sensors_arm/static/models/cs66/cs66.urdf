@@ -2,6 +2,9 @@
 <!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
      Commit Version: 1.5.1-0-g916b5db  Build Version: 1.5.7152.31018
      For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<!-- Kinematic joint origins rebuilt 2026-10-15 from sensors.cs66_kinematics
+     profile elite_cs66 (teach MDH). Meshes unchanged (SolidWorks export).
+     EOAT: KWR75 + EFG-C65 static stack after link6. -->
 <robot
   name="CS66urdf">
   <link
@@ -88,7 +91,7 @@
     name="joint1"
     type="revolute">
     <origin
-      xyz="0 0 0.1625"
+      xyz="0 0 0.162222"
       rpy="0 0 0" />
     <parent
       link="base_link" />
@@ -143,7 +146,7 @@
     type="revolute">
     <origin
       xyz="0 0 0"
-      rpy="1.5708 1.5708 0" />
+      rpy="1.5708 0 0" />
     <parent
       link="link1" />
     <child
@@ -196,7 +199,7 @@
     name="joint3"
     type="revolute">
     <origin
-      xyz="-0.427 0 0"
+      xyz="-0.427765 0 0"
       rpy="0 0 0" />
     <parent
       link="link2" />
@@ -250,8 +253,8 @@
     name="joint4"
     type="revolute">
     <origin
-      xyz="-0.3905 0 0.1475"
-      rpy="0 0 -1.5708" />
+      xyz="-0.391333 0 0.148102"
+      rpy="0 0 0" />
     <parent
       link="link3" />
     <child
@@ -304,7 +307,7 @@
     name="joint5"
     type="revolute">
     <origin
-      xyz="0 -0.0965 0"
+      xyz="0 -0.0962059 0"
       rpy="1.5708 0 0" />
     <parent
       link="link4" />
@@ -358,7 +361,7 @@
     name="joint6"
     type="revolute">
     <origin
-      xyz="0 0.092 0"
+      xyz="0 0.0948112 0"
       rpy="-1.5708 0 0" />
     <parent
       link="link5" />
@@ -369,7 +372,7 @@
     <limit lower="-6.28318530718" upper="6.28318530718" effort="150" velocity="3.14" />
   </joint>
 
-  <!-- EE stack copied from Cell A (EC616): KWR75 FT + DH AG-95 (static viz) -->
+  <!-- EE: KWR75 FT + EFG-C65 gripper (static viz). CAD: cad/EFG-C65.STEP -->
   <link name="ft_kwr75_link">
     <inertial>
       <origin xyz="0 0 0.01675" rpy="0 0 0"/>
@@ -400,27 +403,28 @@
 
   <link name="gripper_centor_link">
     <inertial>
-      <origin xyz="0 0 0.09" rpy="0 0 0"/>
+      <origin xyz="0 0 0.045" rpy="0 0 0"/>
       <mass value="0.8"/>
       <inertia ixx="1e-3" ixy="0" ixz="0" iyy="1e-3" iyz="0" izz="1e-3"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/AG95.STL"/>
+        <mesh filename="meshes/EFG-C65.v3.STL"/>
       </geometry>
-      <material name="gripper_ag95">
+      <material name="gripper_efg_c65">
         <color rgba="0.22 0.22 0.24 1"/>
       </material>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/AG95.STL"/>
+        <mesh filename="meshes/EFG-C65.v3.STL"/>
       </geometry>
     </collision>
   </link>
   <joint name="gripper_centor_fixed" type="fixed">
+    <!-- KWR75 tool face ≈ z=+0.0335; EFG-C65 mesh mount@z0 (CAD -Y→tool -Z), tip@z≈0.117 -->
     <origin xyz="0 0 0.0335" rpy="0 0 0"/>
     <parent link="ft_kwr75_link"/>
     <child link="gripper_centor_link"/>

@@ -28,6 +28,7 @@ models:
 
   # Elite CS66 (口语 ES66). Local archive: CS66urdf.rar → static/models/cs66/
   # Control: hik-sensors arm_cs_write + elite_cs_sdk (NOT elirobots / arm_write).
+  # FK/IK: sensors.cs66_kinematics / elite_cs66 (teach MDH + 交叉验证, not URDF lengths).
   elite_cs66:
     brand: Elite
     product: CS66
@@ -35,14 +36,14 @@ models:
     backend: elite
     kinematics: cs66_kinematics
     kinematics_profile: elite_cs66
-    urdf: /assets/models/cs66/cs66.urdf?v=cs66-ag95-1
+    urdf: /assets/models/cs66/cs66.urdf?v=cs66-efg-c65-3
     joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
     joint_offset_rad: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     joint_signs: [1, 1, 1, 1, 1, 1]
     mirror_y: false
     notes: >-
-      From sensors-arm/CS66urdf.rar (SolidWorks export CS66urdf).
-      FK/IK uses sensors.cs66_kinematics profile elite_cs66 (not sensors.kinematics).
+      URDF joint origins rebuilt from teach MDH (elite_cs66); meshes from CS66urdf.rar.
+      FK/IK = sensors.cs66_kinematics / elite_cs66 (2026-10-15 cross-check ≈0.005 mm FK).
 
   # Placeholder for a second brand — joint bars only until a URDF is added.
   stub_6dof:

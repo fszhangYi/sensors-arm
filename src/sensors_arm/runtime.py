@@ -89,6 +89,8 @@ class Orchestrator:
         # Per-arm session: agents are started only via connect (not all at once).
         self._connected: set[str] = set()
         self._connect_lock = threading.Lock()
+        # UI-applied max_delta_deg overrides (survive driver config re-reads; not YAML).
+        self._max_delta_deg_override: dict[str, float] = {}
 
     def _arm_by_id(self, arm_id: str) -> ArmModelRef:
         for a in self.cfg.arms:
@@ -99,9 +101,20 @@ class Orchestrator:
     def _kin_for_arm(self, arm: ArmModelRef) -> dict[str, Any]:
         model = resolve_model(self.cfg, arm)
         tcp = arm.tcp_xyz if arm.tcp_xyz is not None else self.cfg.tcp_xyz
+        pkg = getattr(model, "kinematics", None) or "kinematics"
+        prof = getattr(model, "kinematics_profile", None)
+        supported: bool | None = None
+        if str(pkg) in ("cs66_kinematics", "cs66", "sensors.cs66_kinematics") and prof:
+            try:
+                from sensors.cs66_kinematics import get_profile
+
+                supported = bool(get_profile(str(prof)).supported)
+            except Exception:  # noqa: BLE001
+                supported = False
         return {
-            "kinematics": getattr(model, "kinematics", None) or "kinematics",
-            "kinematics_profile": getattr(model, "kinematics_profile", None),
+            "kinematics": pkg,
+            "kinematics_profile": prof,
+            "kinematics_supported": supported,
             "tcp_xyz": list(tcp) if tcp is not None else None,
         }
 
@@ -109,12 +122,17 @@ class Orchestrator:
         """Attach per-arm FK/IK backend (CS66 → cs66_kinematics)."""
         for arm in self.cfg.arms:
             kin = self._kin_for_arm(arm)
+            bind = {
+                "kinematics": kin["kinematics"],
+                "kinematics_profile": kin.get("kinematics_profile"),
+                "tcp_xyz": kin.get("tcp_xyz"),
+            }
             for aid in (arm.read_agent, arm.write_agent):
                 if not aid:
                     continue
                 agent = self.agents.get(aid)
                 if agent is not None and hasattr(agent, "set_kinematics"):
-                    agent.set_kinematics(**kin)  # type: ignore[misc]
+                    agent.set_kinematics(**bind)  # type: ignore[misc]
 
     def _sync_homes_to_agents(self) -> None:
         for arm in self.cfg.arms:
@@ -159,6 +177,7 @@ class Orchestrator:
         for arm in self.cfg.arms:
             model = resolve_model(self.cfg, arm)
             net = self._arm_network(arm)
+            kin = self._kin_for_arm(arm)
             out.append(
                 {
                     "id": arm.id,
@@ -173,8 +192,9 @@ class Orchestrator:
                     "joint_signs": model.joint_signs,
                     "mirror_y": model.mirror_y,
                     "backend": model.backend,
-                    "kinematics": getattr(model, "kinematics", None) or "kinematics",
-                    "kinematics_profile": getattr(model, "kinematics_profile", None),
+                    "kinematics": kin["kinematics"],
+                    "kinematics_profile": kin.get("kinematics_profile"),
+                    "kinematics_supported": kin.get("kinematics_supported"),
                     "read_agent": arm.read_agent,
                     "write_agent": arm.write_agent,
                     "home_joints_rad": self._homes.get(arm.id),
@@ -183,9 +203,87 @@ class Orchestrator:
                     "robot_ip": net["robot_ip"],
                     "robot_tcp_port": net["robot_tcp_port"],
                     "endpoint": net["endpoint"],
+                    "max_delta_deg": self.arm_max_delta_get(arm.id).get("max_delta_deg"),
                 }
             )
         return out
+
+    def _write_sensor_for_arm(self, arm_id: str) -> Any:
+        arm = self._arm_by_id(arm_id)
+        writer = self.agents.get(arm.write_agent or "") if arm.write_agent else None
+        if writer is None:
+            raise KeyError(f"arm {arm_id} has no write_agent")
+        sens = getattr(writer, "sensor", None)
+        if sens is None:
+            raise RuntimeError(f"arm {arm_id} write agent has no sensor")
+        return sens
+
+    def _apply_max_delta_to_sensor(self, sens: Any, deg: float) -> None:
+        """Push degrees into driver attribute + mutable config dict."""
+        rad = abs(math.radians(float(deg)))
+        if hasattr(sens, "max_delta_rad"):
+            sens.max_delta_rad = rad
+        cfg = getattr(sens, "config", None)
+        if isinstance(cfg, dict):
+            cfg["max_delta_deg"] = float(deg)
+
+    def arm_max_delta_get(self, arm_id: str) -> dict[str, Any]:
+        """Per-arm joint command guard: max |Δq| in degrees (driver max_delta_deg)."""
+        arm = self._arm_by_id(arm_id)
+        try:
+            sens = self._write_sensor_for_arm(arm_id)
+        except (KeyError, RuntimeError) as e:
+            return {"ok": False, "arm_id": arm_id, "error": str(e), "max_delta_deg": None}
+        # Prefer UI override, then keep sensor attribute in sync with it.
+        if arm_id in self._max_delta_deg_override:
+            deg = float(self._max_delta_deg_override[arm_id])
+            try:
+                self._apply_max_delta_to_sensor(sens, deg)
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            rad = getattr(sens, "max_delta_rad", None)
+            if rad is None:
+                cfg = getattr(sens, "config", None) or {}
+                try:
+                    deg = float(cfg.get("max_delta_deg")) if isinstance(cfg, dict) else None
+                except (TypeError, ValueError):
+                    deg = None
+            else:
+                deg = float(math.degrees(float(rad)))
+        if deg is not None and math.isfinite(deg):
+            deg = round(float(deg), 4)
+        return {
+            "ok": True,
+            "arm_id": arm_id,
+            "label": arm.label or arm_id,
+            "max_delta_deg": deg,
+        }
+
+    def arm_max_delta_set(self, arm_id: str, max_delta_deg: float) -> dict[str, Any]:
+        """Update runtime max_delta on the write driver (does not rewrite YAML)."""
+        try:
+            deg = float(max_delta_deg)
+        except (TypeError, ValueError):
+            return {"ok": False, "arm_id": arm_id, "error": "max_delta_deg must be a number"}
+        if not math.isfinite(deg) or deg <= 0:
+            return {"ok": False, "arm_id": arm_id, "error": "max_delta_deg must be > 0"}
+        if deg > 180.0:
+            return {"ok": False, "arm_id": arm_id, "error": "max_delta_deg must be ≤ 180°"}
+        try:
+            sens = self._write_sensor_for_arm(arm_id)
+        except (KeyError, RuntimeError) as e:
+            return {"ok": False, "arm_id": arm_id, "error": str(e)}
+        if not hasattr(sens, "max_delta_rad"):
+            return {
+                "ok": False,
+                "arm_id": arm_id,
+                "error": "write sensor does not support max_delta_rad",
+            }
+        deg = round(abs(deg), 4)
+        self._max_delta_deg_override[arm_id] = deg
+        self._apply_max_delta_to_sensor(sens, deg)
+        return self.arm_max_delta_get(arm_id)
 
     def status(self) -> dict[str, Any]:
         return {
@@ -234,6 +332,14 @@ class Orchestrator:
                 except Exception:  # noqa: BLE001
                     pass
                 return {"ok": False, "error": str(e), "arm_id": arm_id}
+            # Re-apply UI maxΔ after open() — drivers may rebuild from YAML 15°.
+            if arm_id in self._max_delta_deg_override and isinstance(writer, ArmWriteAgent):
+                try:
+                    self._apply_max_delta_to_sensor(
+                        writer.sensor, self._max_delta_deg_override[arm_id]
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             self._connected.add(arm_id)
             print(f"[sensors-arm] connected {arm_id}", flush=True)
             return {
@@ -241,6 +347,7 @@ class Orchestrator:
                 "arm_id": arm_id,
                 "connected": True,
                 "message": f"已连接 {arm.label or arm_id}",
+                "max_delta_deg": self.arm_max_delta_get(arm_id).get("max_delta_deg"),
             }
 
     def arm_disconnect(self, arm_id: str) -> dict[str, Any]:
@@ -652,7 +759,16 @@ class Orchestrator:
         out["home"] = self.arm_home_get(arm_id)
         return out
 
-    def arm_ik(self, arm_id: str, xyzrpy: list[float], seed: list[float] | None = None) -> dict[str, Any]:
+    def arm_ik(
+        self,
+        arm_id: str,
+        xyzrpy: list[float],
+        seed: list[float] | None = None,
+        *,
+        ori_weight: float | None = None,
+        orientation_tolerance_rad: float | None = None,
+        accept_residual: float | None = None,
+    ) -> dict[str, Any]:
         arm = self._arm_by_id(arm_id)
         kin = self._kin_for_arm(arm)
         if seed is None:
@@ -663,20 +779,23 @@ class Orchestrator:
             tcp = kin.get("tcp_xyz")
             if tcp is not None:
                 set_tcp_xyz(tcp)
-            result = xyzrpy_to_joints_rad(
-                xyzrpy,
-                q_seed_rad=seed,
-                tcp_xyz=tcp,
-                kinematics=kin["kinematics"],
-                kinematics_profile=kin.get("kinematics_profile"),
-                # Drag-friendly: multi-seed + slightly looser accept (CS66 provisional DH).
-                max_nfev=800,
-                accept_residual=2.0e-2,
-                position_tolerance_m=5e-3,
-                orientation_tolerance_rad=5e-2,
-                ori_weight=0.2,
-                multi_seed=True,
-            )
+            ik_kwargs: dict[str, Any] = {
+                "q_seed_rad": seed,
+                "tcp_xyz": tcp,
+                "kinematics": kin["kinematics"],
+                "kinematics_profile": kin.get("kinematics_profile"),
+                # Drag-friendly multi-seed; tolerances match arm_pose defaults.
+                # Cell B elite_cs66 is teach-MDH calibrated (not provisional URDF DH).
+                "max_nfev": 800,
+                "multi_seed": True,
+            }
+            if ori_weight is not None:
+                ik_kwargs["ori_weight"] = float(ori_weight)
+            if orientation_tolerance_rad is not None:
+                ik_kwargs["orientation_tolerance_rad"] = float(orientation_tolerance_rad)
+            if accept_residual is not None:
+                ik_kwargs["accept_residual"] = float(accept_residual)
+            result = xyzrpy_to_joints_rad(xyzrpy, **ik_kwargs)
             if not isinstance(result, dict):
                 return {"ok": False, "error": "unexpected IK result"}
             if not result.get("ok", True) and result.get("joints_rad") is None:

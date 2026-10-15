@@ -671,6 +671,10 @@ PAGE = r"""<!DOCTYPE html>
       font-size: 0.85rem;
       animation: toastIn 0.28s var(--ease);
     }
+    .ip-row.max-delta-row .v { flex: 1; min-width: 0; }
+    .ip-row.max-delta-row button {
+      flex: 0 0 auto; padding: 0.28rem 0.55rem; font-size: 0.72rem;
+    }
     @keyframes toastIn {
       from { opacity: 0; transform: translateY(8px); }
       to { opacity: 1; transform: translateY(0); }
@@ -708,6 +712,11 @@ PAGE = r"""<!DOCTYPE html>
         <span class="k">TCP</span>
         <input type="text" class="v" id="armTcp" value="—" readonly tabindex="0" aria-readonly="true"/>
       </div>
+      <div class="ip-row max-delta-row" title="本 Cell 写驱动单次关节 |Δq| 上限（max_delta_deg），与其它臂独立">
+        <span class="k">最大Δ°</span>
+        <input type="number" class="v" id="armMaxDelta" min="0.1" max="180" step="0.5" value="15" aria-label="本臂最大角度偏差"/>
+        <button type="button" class="ghost compact" id="btnMaxDeltaApply">应用</button>
+      </div>
       <div class="row conn-row">
         <button type="button" class="ok" id="btnConnect">连接</button>
         <button type="button" class="danger" id="btnDisconnect" disabled>断开</button>
@@ -725,16 +734,16 @@ PAGE = r"""<!DOCTYPE html>
           <input type="color" id="tcpTrailColor" value="#3dd6c6" aria-label="轨迹颜色"/>
           <span class="tcp-trail-color-label">轨迹色</span>
         </label>
-        <div class="tcp-mass-control" title="越大越钝（重质量阻尼）">
+        <div class="tcp-mass-control" title="平移与旋转共用：越大越钝（重质量阻尼）">
           <span class="tcp-mass-label">阻尼</span>
-          <input type="range" id="tcpMass" min="5" max="200" step="1" value="28" aria-label="琥珀球质量/阻尼"/>
+          <input type="range" id="tcpMass" min="5" max="200" step="1" value="28" aria-label="TCP 平移/旋转质量阻尼"/>
           <span class="tcp-mass-val" id="tcpMassVal">28</span>
         </div>
-        <button type="button" class="tcp-hold-resume" id="tcpHoldResume" hidden title="放弃 IK 预览，琥珀球与 URDF 回到 live 读数">恢复跟随</button>
+        <button type="button" class="tcp-hold-resume" id="tcpHoldResume" hidden title="（已改为拖拽结束后自动恢复跟随）">恢复跟随</button>
         <div class="tcp-drag-panel" id="tcpDragPanel" hidden>
           <div class="tcp-drag-head">
             <strong>拖拽 IK</strong>
-            <button type="button" class="tcp-drag-close" id="tcpDragClose" aria-label="关闭并保持预览">×</button>
+            <button type="button" class="tcp-drag-close" id="tcpDragClose" aria-label="关闭并恢复 live 跟随">×</button>
           </div>
           <label class="tcp-autosend" title="勾选后 IK 成功即走绝对下发（需已连接；可先 Arm）">
             <input type="checkbox" id="tcpAutoSend" checked/>
@@ -744,12 +753,13 @@ PAGE = r"""<!DOCTYPE html>
           <div class="tcp-drag-status" id="tcpDragStatus">拖拽琥珀球 → IK；勾选「自动下发」则写臂</div>
         </div>
       </div>
-      <p class="hint" id="viewHint">加载模型… · 拖拽旋转 / 滚轮缩放 · 琥珀球拖拽测 IK · TCP 轨迹自动落点</p>
+      <p class="hint" id="viewHint">加载模型… · 拖拽旋转 / 滚轮缩放 · 琥珀=TCP · 蓝球=法兰 · TCP 轨迹自动落点</p>
     </section>
     <aside class="panel">
       <h2>Read</h2>
       <div id="jointRead"></div>
       <p class="hint" id="poseLine">TCP —</p>
+      <p class="hint" id="flangeLine">法兰 —</p>
       <div class="row copy-row">
         <button type="button" class="ghost compact" id="btnCopyJoints">复制 joints</button>
         <button type="button" class="ghost compact" id="btnCopyPose">复制 pose</button>
@@ -763,7 +773,7 @@ PAGE = r"""<!DOCTYPE html>
         <button type="button" class="ghost" id="btnHomeGo">Home</button>
         <button type="button" class="ghost" id="btnHomeSet">设为 Home</button>
       </div>
-      <label class="hint">点动 Δ° <input type="number" id="deltaDeg" value="2" step="0.5" min="0.1" max="15"/></label>
+      <label class="hint">点动 Δ° <input type="number" id="deltaDeg" value="2" step="0.5" min="0.1" max="180" title="单次点动角度；上限随左侧「最大Δ°」变化"/></label>
       <div id="jogBox"></div>
       <h2 style="margin-top:1rem">绝对下发</h2>
       <p class="hint" title="双击 joints 标签填入当前读角">T=clamp(d/v_norm, t_min, t_max) · 七段 jerk 插值（同 sensors-dcs）</p>
@@ -797,14 +807,32 @@ PAGE = r"""<!DOCTYPE html>
   let absRamp = { enabled: false, phase: 'idle', params: {} };
   let absTimingSeeded = false;
   let tcpMarker = null;
+  let flangeMarker = null;
+  let tcpRotGizmo = null;
+  let tcpRotRings = [];
   let tcpDragActive = false;
   let tcpPreviewHold = false;
   let tcpPointerDown = false;
+  let tcpDragMode = 'translate'; // 'translate' | 'rotate'
+  let tcpRotAxis = 0; // 0:X 1:Y 2:Z in TCP local frame
+  let tcpRotLastAngle = 0;
+  let tcpRotOriOk = true; // last rotate IK matched target orientation
   let dragXyzrpy = null;
   let dragVelThree = null;
+  let dragRotVel = 0; // rad/s about active local tcpRotAxis (damped, like translate)
   let dragPreviewJoints = null;
   let dragHeldXyzrpy = null;
   let hasTcp = false;
+  let _tcpRaycaster = null;
+  let _tcpNdc = null;
+  let _tcpHitPlane = null;
+  let _tcpHitPt = null;
+  let _tcpTmpV = null;
+  let _tcpTmpV2 = null;
+  let _tcpTmpV3 = null;
+  let _tcpTmpQ = null;
+  let _tcpTmpQ2 = null;
+  let _tcpTmpE = null;
   let lastTickMs = 0;
   let lastIkMs = 0;
   let ikInFlight = false;
@@ -815,6 +843,10 @@ PAGE = r"""<!DOCTYPE html>
   const TCP_DAMP = 0.90;
   const TCP_V_MAX = 0.12;
   const TCP_IMPULSE_PX = 0.022;
+  const TCP_OMEGA_MAX = 6.0; // rad/s — rotate coast cap
+  const TCP_ROT_IMPULSE = 55.0; // pointer Δangle → residual ω / mass (coast after release)
+  const TCP_ROT_DAMP = 0.94; // lighter than translate damp — coast stays visible
+  const TCP_ROT_DIRECT = 0.85; // fraction of pointer Δangle applied immediately while dragging
   const IK_MIN_INTERVAL_MS = 80;
   const LS_TCP_MASS = 'sensors-arm.tcpMass';
   const LS_TCP_AUTO_SEND = 'sensors-arm.tcpAutoSend';
@@ -825,6 +857,11 @@ PAGE = r"""<!DOCTYPE html>
   const TCP_PICK_MIN_PX = 22;
   const TCP_PICK_MAX_PX = 48;
   const TCP_MARKER_R = 0.016;
+  const FLANGE_MARKER_R = 0.014;
+  const TCP_ROT_RING_R = 0.22; // was 0.116 — larger CAD-style rings
+  const TCP_ROT_TUBE = 0.0065;
+  const TCP_ROT_HIT_TUBE = 0.028;
+  const TCP_ROT_COLORS = [0xe74c3c, 0x2ecc71, 0x3498db]; // X Y Z — CAD-like
   const TCP_TIP_LINK_CANDIDATES = [
     'gripper_centor_link', 'gripper_center_link', 'flan', 'tool0', 'tcp',
     'ee_link', 'ft_kwr75_link', 'link6',
@@ -917,6 +954,13 @@ PAGE = r"""<!DOCTYPE html>
     const p = fr && fr.payload && fr.payload.cartesian_xyzrpy;
     return Array.isArray(p) ? p : null;
   }
+  function currentFlangePose() {
+    const arm = activeArm();
+    if (!arm || !arm.connected) return null;
+    const fr = framesByAgent[arm.read_agent];
+    const p = fr && fr.payload && fr.payload.flange_xyzrpy;
+    return Array.isArray(p) ? p : null;
+  }
 
   function fillAbsFromRead() {
     const j = currentJoints();
@@ -955,7 +999,7 @@ PAGE = r"""<!DOCTYPE html>
   }
   function fmtTcpXyz(arr) {
     if (!Array.isArray(arr) || arr.length < 3) return '—';
-    return [0, 1, 2].map((i) => Number(arr[i]).toFixed(2)).join('; ');
+    return [0, 1, 2].map((i) => Number(arr[i]).toFixed(4)).join('; ');
   }
   function paintConn() {
     const arm = activeArm();
@@ -993,6 +1037,87 @@ PAGE = r"""<!DOCTYPE html>
       const el = $(id);
       if (el && id !== 'btnAbsSend') el.disabled = !on;
     });
+    paintArmMaxDelta();
+    syncJogDeltaMax();
+  }
+
+  let maxDeltaDirty = false;
+
+  function syncJogDeltaMax() {
+    const arm = activeArm();
+    const el = $('deltaDeg');
+    if (!el) return;
+    // While editing maxΔ, don't fight the user with jog-cap clamps from stale arm.*.
+    if (maxDeltaDirty || document.activeElement === $('armMaxDelta')) return;
+    const cap = (arm && arm.max_delta_deg != null && Number.isFinite(Number(arm.max_delta_deg)))
+      ? Number(arm.max_delta_deg)
+      : 15;
+    el.max = String(cap);
+    el.setAttribute('max', String(cap));
+    const cur = Number(el.value);
+    if (Number.isFinite(cur) && cur > cap) el.value = String(cap);
+    el.title = '单次点动角度；不可超过本臂最大角度偏差 ' + cap + '°';
+  }
+
+  function paintArmMaxDelta(opts) {
+    opts = opts || {};
+    const arm = activeArm();
+    const inp = $('armMaxDelta');
+    const btn = $('btnMaxDeltaApply');
+    if (!inp) return;
+    if (!arm) {
+      inp.value = '';
+      inp.disabled = true;
+      if (btn) btn.disabled = true;
+      maxDeltaDirty = false;
+      return;
+    }
+    inp.disabled = false;
+    if (btn) btn.disabled = false;
+    inp.title = (arm.label || arm.id) + ' · max_delta_deg（仅本臂；改完点「应用」写入驱动）';
+    // WS/paintConn runs at viz_hz — never overwrite while typing / dirty.
+    if (!opts.force && (maxDeltaDirty || document.activeElement === inp)) return;
+    const deg = arm.max_delta_deg;
+    if (deg != null && Number.isFinite(Number(deg))) {
+      inp.value = String(Number(Number(deg).toFixed(2)));
+    }
+  }
+
+  async function refreshArmMaxDeltaFromServer() {
+    const arm = activeArm();
+    if (!arm) return;
+    try {
+      const r = await fetch('/api/arm/max-delta?arm_id=' + encodeURIComponent(arm.id)).then((x) => x.json());
+      if (r && r.ok && r.max_delta_deg != null) {
+        arm.max_delta_deg = r.max_delta_deg;
+        maxDeltaDirty = false;
+        paintArmMaxDelta({ force: true });
+        syncJogDeltaMax();
+      }
+    } catch (_) {}
+  }
+
+  async function applyArmMaxDelta() {
+    const arm = activeArm();
+    if (!arm) { toast('请先选择臂'); return; }
+    const inp = $('armMaxDelta');
+    const deg = Number(inp && inp.value);
+    if (!Number.isFinite(deg) || deg <= 0) { toast('最大角度偏差须 > 0'); return; }
+    if (deg > 180) { toast('最大角度偏差须 ≤ 180°'); return; }
+    const r = await fetch('/api/arm/max-delta', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ arm_id: arm.id, max_delta_deg: deg }),
+    }).then((x) => x.json());
+    if (!r || !r.ok) {
+      toast((r && r.error) || '设置失败');
+      return;
+    }
+    arm.max_delta_deg = r.max_delta_deg;
+    maxDeltaDirty = false;
+    paintArmMaxDelta({ force: true });
+    syncJogDeltaMax();
+    toast((arm.label || arm.id) + ' 最大Δ° = ' + Number(r.max_delta_deg).toFixed(2) + '（已写入驱动）');
   }
 
   function paintAbsProg() {
@@ -1026,6 +1151,205 @@ PAGE = r"""<!DOCTYPE html>
 
   function robotToThree(x, y, z) { return { x: x, y: z, z: -y }; }
   function threeToRobot(x, y, z) { return { x: x, y: -z, z: y }; }
+  /** Match setTcpPose / applyDragPoseToMarker euler mapping. */
+  function robotRpyToThreeEuler(rx, ry, rz) {
+    return { x: Number(rx) || 0, y: Number(rz) || 0, z: -(Number(ry) || 0) };
+  }
+  function threeEulerToRobotRpy(ex, ey, ez) {
+    return { rx: ex, ry: -ez, rz: ey };
+  }
+  function wrapPi(a) {
+    let x = a;
+    while (x > Math.PI) x -= 2 * Math.PI;
+    while (x < -Math.PI) x += 2 * Math.PI;
+    return x;
+  }
+  /** Orientation error (rad) via quaternion angle — immune to Euler ±π wrap. */
+  function rpyOriErr(a, b) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length < 6 || b.length < 6) return Infinity;
+    if (!_tcpTmpE) _tcpTmpE = new THREE.Euler();
+    if (!_tcpTmpQ) _tcpTmpQ = new THREE.Quaternion();
+    if (!_tcpTmpQ2) _tcpTmpQ2 = new THREE.Quaternion();
+    const ea = robotRpyToThreeEuler(a[3], a[4], a[5]);
+    const eb = robotRpyToThreeEuler(b[3], b[4], b[5]);
+    _tcpTmpE.set(ea.x, ea.y, ea.z, 'XYZ');
+    _tcpTmpQ.setFromEuler(_tcpTmpE);
+    _tcpTmpE.set(eb.x, eb.y, eb.z, 'XYZ');
+    _tcpTmpQ2.setFromEuler(_tcpTmpE);
+    return _tcpTmpQ.angleTo(_tcpTmpQ2);
+  }
+  function formatXyzrpy(arr) {
+    if (!Array.isArray(arr) || arr.length < 6) return '—';
+    return arr.slice(0, 6).map((x) => Number(x).toFixed(3)).join(', ');
+  }
+  function applyDragPoseToMarker() {
+    if (!tcpMarker || !dragXyzrpy) return;
+    const p = robotToThree(dragXyzrpy[0], dragXyzrpy[1], dragXyzrpy[2]);
+    tcpMarker.position.set(p.x, p.y, p.z);
+    const e = robotRpyToThreeEuler(dragXyzrpy[3], dragXyzrpy[4], dragXyzrpy[5]);
+    tcpMarker.rotation.set(e.x, e.y, e.z, 'XYZ');
+    tcpMarker.visible = true;
+    hasTcp = true;
+    updateTcpRotGizmoScale();
+  }
+  function syncDragRpyFromMarker() {
+    if (!tcpMarker || !dragXyzrpy) return;
+    if (!_tcpTmpE) _tcpTmpE = new THREE.Euler();
+    _tcpTmpE.setFromQuaternion(tcpMarker.quaternion, 'XYZ');
+    const r = threeEulerToRobotRpy(_tcpTmpE.x, _tcpTmpE.y, _tcpTmpE.z);
+    dragXyzrpy[3] = r.rx;
+    dragXyzrpy[4] = r.ry;
+    dragXyzrpy[5] = r.rz;
+  }
+  function updateTcpRotGizmoScale() {
+    if (!tcpRotGizmo || !tcpMarker || !camera) return;
+    const dist = camera.position.distanceTo(tcpMarker.position);
+    // Larger on-screen rings; clamp so they stay pickable when zoomed out.
+    const s = Math.max(0.85, Math.min(3.6, dist * 0.55));
+    tcpRotGizmo.scale.setScalar(s);
+  }
+  function buildTcpRotGizmo() {
+    if (!tcpMarker || tcpRotGizmo) return;
+    tcpRotGizmo = new THREE.Group();
+    tcpRotGizmo.name = 'tcpRotGizmo';
+    tcpRotRings = [];
+    // Torus lies in XY (around +Z). Reorient for X / Y rings.
+    const orients = [
+      new THREE.Euler(0, Math.PI / 2, 0), // X → YZ plane
+      new THREE.Euler(Math.PI / 2, 0, 0), // Y → XZ plane
+      new THREE.Euler(0, 0, 0),           // Z → XY plane
+    ];
+    for (let axis = 0; axis < 3; axis++) {
+      const group = new THREE.Group();
+      group.name = 'tcpRotAxis' + axis;
+      group.rotation.copy(orients[axis]);
+      const mat = new THREE.MeshBasicMaterial({
+        color: TCP_ROT_COLORS[axis],
+        depthTest: true,
+        transparent: true,
+        opacity: 0.92,
+      });
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(TCP_ROT_RING_R, TCP_ROT_TUBE, 10, 64),
+        mat,
+      );
+      ring.userData.tcpRotAxis = axis;
+      ring.userData.tcpRotVisual = true;
+      const hitMat = new THREE.MeshBasicMaterial({
+        visible: false,
+        depthTest: true,
+      });
+      const hit = new THREE.Mesh(
+        new THREE.TorusGeometry(TCP_ROT_RING_R, TCP_ROT_HIT_TUBE, 8, 48),
+        hitMat,
+      );
+      hit.userData.tcpRotAxis = axis;
+      hit.userData.tcpRotHit = true;
+      group.add(ring);
+      group.add(hit);
+      tcpRotGizmo.add(group);
+      tcpRotRings.push(ring, hit);
+    }
+    tcpMarker.add(tcpRotGizmo);
+  }
+  function setTcpRotGizmoVisible(on) {
+    if (tcpRotGizmo) tcpRotGizmo.visible = !!on;
+  }
+  function highlightTcpRotAxis(axisIdx) {
+    if (!tcpRotGizmo) return;
+    tcpRotGizmo.children.forEach((group, i) => {
+      const ring = group.children && group.children[0];
+      if (!ring || !ring.material) return;
+      const active = (axisIdx === i);
+      ring.material.opacity = active ? 1.0 : 0.78;
+      ring.material.color.setHex(TCP_ROT_COLORS[i]);
+      if (active) ring.scale.setScalar(1.08);
+      else ring.scale.setScalar(1.0);
+    });
+  }
+  function pickTcpRotRing(ev) {
+    if (!tcpMarker || !tcpMarker.visible || !renderer || !camera) return null;
+    if (!tcpRotGizmo || !tcpRotGizmo.visible) return null;
+    if (!_tcpRaycaster) _tcpRaycaster = new THREE.Raycaster();
+    if (!_tcpNdc) _tcpNdc = new THREE.Vector2();
+    const canvas = renderer.domElement;
+    const rect = canvas.getBoundingClientRect();
+    _tcpNdc.x = ((ev.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
+    _tcpNdc.y = -((ev.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1;
+    _tcpRaycaster.setFromCamera(_tcpNdc, camera);
+    _tcpRaycaster.params.Line = _tcpRaycaster.params.Line || {};
+    const hits = _tcpRaycaster.intersectObjects(tcpRotRings, false);
+    if (!hits.length) return null;
+    const axis = hits[0].object.userData.tcpRotAxis;
+    if (axis == null) return null;
+    return { axis: Number(axis), point: hits[0].point };
+  }
+  function worldAxisForTcpRot(axisIdx) {
+    if (!_tcpTmpV) _tcpTmpV = new THREE.Vector3();
+    const local = axisIdx === 0 ? _tcpTmpV.set(1, 0, 0)
+      : (axisIdx === 1 ? _tcpTmpV.set(0, 1, 0) : _tcpTmpV.set(0, 0, 1));
+    return local.clone().transformDirection(tcpMarker.matrixWorld).normalize();
+  }
+  function angleAroundTcpAxis(clientX, clientY, axisWorld) {
+    if (!tcpMarker || !camera || !renderer) return null;
+    if (!_tcpRaycaster) _tcpRaycaster = new THREE.Raycaster();
+    if (!_tcpNdc) _tcpNdc = new THREE.Vector2();
+    if (!_tcpHitPlane) _tcpHitPlane = new THREE.Plane();
+    if (!_tcpHitPt) _tcpHitPt = new THREE.Vector3();
+    if (!_tcpTmpV2) _tcpTmpV2 = new THREE.Vector3();
+    if (!_tcpTmpV3) _tcpTmpV3 = new THREE.Vector3();
+    const canvas = renderer.domElement;
+    const rect = canvas.getBoundingClientRect();
+    _tcpNdc.x = ((clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
+    _tcpNdc.y = -((clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1;
+    _tcpRaycaster.setFromCamera(_tcpNdc, camera);
+    const origin = _tcpTmpV2;
+    tcpMarker.getWorldPosition(origin);
+    _tcpHitPlane.setFromNormalAndCoplanarPoint(axisWorld, origin);
+    if (!_tcpRaycaster.ray.intersectPlane(_tcpHitPlane, _tcpHitPt)) return null;
+    const v = _tcpHitPt.clone().sub(origin);
+    if (v.lengthSq() < 1e-12) return null;
+    const ref = Math.abs(axisWorld.dot(_tcpTmpV3.set(0, 1, 0))) < 0.9
+      ? _tcpTmpV3.set(0, 1, 0)
+      : _tcpTmpV3.set(1, 0, 0);
+    const t = new THREE.Vector3().crossVectors(axisWorld, ref).normalize();
+    const b = new THREE.Vector3().crossVectors(axisWorld, t).normalize();
+    return Math.atan2(v.dot(b), v.dot(t));
+  }
+  function applyTcpRotationDelta(dAng) {
+    /** Integrate a local-axis angle step onto the amber ball (no IK). */
+    if (!tcpMarker || !dragXyzrpy || !Number.isFinite(dAng) || Math.abs(dAng) < 1e-12) return;
+    if (!_tcpTmpQ) _tcpTmpQ = new THREE.Quaternion();
+    if (!_tcpTmpV) _tcpTmpV = new THREE.Vector3();
+    const axis = tcpRotAxis === 0 ? _tcpTmpV.set(1, 0, 0)
+      : (tcpRotAxis === 1 ? _tcpTmpV.set(0, 1, 0) : _tcpTmpV.set(0, 0, 1));
+    _tcpTmpQ.setFromAxisAngle(axis, dAng);
+    tcpMarker.quaternion.multiply(_tcpTmpQ);
+    tcpMarker.updateMatrixWorld(true);
+    syncDragRpyFromMarker();
+  }
+  function applyTcpRotImpulse(dAng) {
+    /** Pointer Δangle → residual ω for coast after release (mass slider). */
+    if (!Number.isFinite(dAng) || Math.abs(dAng) < 1e-9) return;
+    const mass = Math.max(TCP_MASS_MIN, getTcpMass());
+    dragRotVel += (dAng * TCP_ROT_IMPULSE) / mass;
+    if (dragRotVel > TCP_OMEGA_MAX) dragRotVel = TCP_OMEGA_MAX;
+    if (dragRotVel < -TCP_OMEGA_MAX) dragRotVel = -TCP_OMEGA_MAX;
+  }
+  function applyTcpRotPointerDelta(dAng) {
+    /**
+     * While finger is down: mostly follow the pointer (visible feedback),
+     * and stash a bit of ω so release still coasts with damping.
+     */
+    if (!Number.isFinite(dAng) || Math.abs(dAng) < 1e-9) return;
+    const direct = dAng * TCP_ROT_DIRECT;
+    const coast = dAng * (1 - TCP_ROT_DIRECT);
+    applyTcpRotationDelta(direct);
+    applyTcpRotImpulse(coast);
+    const axName = tcpRotAxis === 0 ? 'X' : (tcpRotAxis === 1 ? 'Y' : 'Z');
+    setDragStatus('', '旋转 ' + axName + ' · 目标 ' + formatXyzrpy(dragXyzrpy) + ' · 求解中…');
+    scheduleIk(false);
+  }
   function parseXyz(arr) {
     if (!Array.isArray(arr) || arr.length < 3) return null;
     const x = Number(arr[0]), y = Number(arr[1]), z = Number(arr[2]);
@@ -1164,7 +1488,10 @@ PAGE = r"""<!DOCTYPE html>
     dragXyzrpy = null;
     tcpDragActive = false;
     tcpPointerDown = false;
+    tcpDragMode = 'translate';
+    highlightTcpRotAxis(-1);
     if (dragVelThree) dragVelThree.set(0, 0, 0);
+    dragRotVel = 0;
     ikPending = false;
     if (controls) controls.enabled = true;
     const panel = $('tcpDragPanel');
@@ -1180,31 +1507,19 @@ PAGE = r"""<!DOCTYPE html>
     syncTcpMarkerFromLive();
   }
   function closeTcpDragPreview() {
-    // Keep last IK / ball pose for inspection — do not snap back to live FK.
-    tcpDragActive = false;
-    tcpPointerDown = false;
-    tcpAutoSendAfterIk = false;
-    if (Array.isArray(dragXyzrpy) && dragXyzrpy.length >= 6) {
-      dragHeldXyzrpy = dragXyzrpy.slice(0, 6);
-    }
-    if (Array.isArray(dragPreviewJoints) && dragPreviewJoints.length >= 6) {
-      tcpPreviewHold = true;
-    } else if (dragHeldXyzrpy) {
-      tcpPreviewHold = true;
-    }
-    dragXyzrpy = null;
-    if (dragVelThree) dragVelThree.set(0, 0, 0);
-    ikPending = false;
-    if (controls) controls.enabled = true;
-    const panel = $('tcpDragPanel');
-    if (panel) panel.hidden = true;
-    const host = $('stage');
-    if (host) host.classList.remove('is-tcp-drag');
-    setHoldResumeVisible(!!tcpPreviewHold);
-    if (tcpPreviewHold && Array.isArray(dragPreviewJoints)) {
-      paintJointsFromArray(dragPreviewJoints);
-      if (dragHeldXyzrpy) setTcpPose(dragHeldXyzrpy, { skipTrail: true, force: true });
-    }
+    // Drag done → snap back to live FK follow (no hold / no「恢复跟随」).
+    resumeLiveTcpFollow();
+  }
+  function maybeAutoResumeAfterDrag() {
+    if (!tcpDragActive || tcpPointerDown) return;
+    if (dragVelThree && dragVelThree.lengthSq() > 1e-10) return;
+    if (Math.abs(dragRotVel) > 1e-4) return;
+    if (ikInFlight || ikPending || tcpAutoSendAfterIk || tcpAutoSendInFlight) return;
+    // Rotate: never auto-snap back to live — otherwise a successful IK instantly
+    // restores the old pose and feels like "rotation has no feedback".
+    // User closes the drag panel (×) to resume live follow.
+    if (tcpDragMode === 'rotate') return;
+    resumeLiveTcpFollow();
   }
   function queueTcpIkSend() {
     if (!tcpDragActive || !isTcpAutoSendOn()) return;
@@ -1253,6 +1568,7 @@ PAGE = r"""<!DOCTYPE html>
     } finally {
       tcpAutoSendInFlight = false;
       if (tcpAutoSendAfterIk && tcpDragActive) autoSendTcpIkJoints();
+      else maybeAutoResumeAfterDrag();
     }
   }
   function findUrdfTcpObject() {
@@ -1264,18 +1580,48 @@ PAGE = r"""<!DOCTYPE html>
       }
     }
     let best = null;
-    let bestDepth = -1;
+    let bestScore = -1;
     robot.traverse((obj) => {
       if (!obj || !obj.isObject3D) return;
       const name = String(obj.name || '');
       if (!name) return;
-      const depth = (obj.parent ? 1 : 0) + (obj.children ? obj.children.length : 0);
-      if (/gripper_centor|gripper_center|flan|tool0|^tcp$|ee_link|ft_kwr75|link6/i.test(name)) {
-        const score = /gripper_centor|gripper_center|flan|tool0/i.test(name) ? 100 : 10;
-        if (score + depth > bestDepth) { bestDepth = score + depth; best = obj; }
-      }
+      let score = 0;
+      if (/gripper_centor_link|gripper_center_link/i.test(name)) score = 200;
+      else if (/gripper_centor|gripper_center/i.test(name)) score = 150;
+      else if (/^flan$|tool0|^tcp$|ee_link/i.test(name)) score = 80;
+      else if (/ft_kwr75_link/i.test(name)) score = 40;
+      else if (/^link6$/i.test(name)) score = 10;
+      if (score > bestScore) { bestScore = score; best = obj; }
     });
     return best;
+  }
+  /** Live follow: parent amber ball to URDF tip (local 0) so it cannot float vs mesh. */
+  function attachTcpMarkerToUrdfTip() {
+    if (!tcpMarker || !robot) return false;
+    const tip = findUrdfTcpObject();
+    if (!tip) return false;
+    robot.updateMatrixWorld(true);
+    if (tcpMarker.parent !== tip) tip.add(tcpMarker);
+    tcpMarker.position.set(0, 0, 0);
+    tcpMarker.quaternion.identity();
+    tcpMarker.visible = true;
+    hasTcp = true;
+    setTcpRotGizmoVisible(true);
+    updateTcpRotGizmoScale();
+    return true;
+  }
+  /** Drag / FK pose: ball must live in scene root with Three-frame xyz. */
+  function detachTcpMarkerToScene() {
+    if (!tcpMarker || !scene) return;
+    if (tcpMarker.parent === scene) return;
+    tcpMarker.updateMatrixWorld(true);
+    const w = new THREE.Vector3();
+    const q = new THREE.Quaternion();
+    tcpMarker.getWorldPosition(w);
+    tcpMarker.getWorldQuaternion(q);
+    scene.add(tcpMarker);
+    tcpMarker.position.copy(w);
+    tcpMarker.quaternion.copy(q);
   }
   function setTcpPose(xyzrpy, opts) {
     opts = opts || {};
@@ -1283,39 +1629,69 @@ PAGE = r"""<!DOCTYPE html>
     if (!opts.force && (tcpDragActive || tcpPreviewHold)) return false;
     const xyz = parseXyz(xyzrpy);
     if (!xyz) return false;
+    detachTcpMarkerToScene();
     const p = robotToThree(xyz.x, xyz.y, xyz.z);
     tcpMarker.position.set(p.x, p.y, p.z);
     const rx = Number(xyzrpy[3]), ry = Number(xyzrpy[4]), rz = Number(xyzrpy[5]);
     if ([rx, ry, rz].every(Number.isFinite)) tcpMarker.rotation.set(rx, rz, -ry, 'XYZ');
     tcpMarker.visible = true;
     hasTcp = true;
+    setTcpRotGizmoVisible(true);
+    updateTcpRotGizmoScale();
     if (!opts.skipTrail) pushTrailWaypoint(p.x, p.y, p.z);
+    return true;
+  }
+  function setFlangePose(xyzrpy) {
+    if (!flangeMarker) return false;
+    const xyz = parseXyz(xyzrpy);
+    if (!xyz) {
+      flangeMarker.visible = false;
+      return false;
+    }
+    const p = robotToThree(xyz.x, xyz.y, xyz.z);
+    flangeMarker.position.set(p.x, p.y, p.z);
+    const rx = Number(xyzrpy[3]), ry = Number(xyzrpy[4]), rz = Number(xyzrpy[5]);
+    if ([rx, ry, rz].every(Number.isFinite)) flangeMarker.rotation.set(rx, rz, -ry, 'XYZ');
+    flangeMarker.visible = true;
     return true;
   }
   function syncTcpMarkerFromUrdf() {
     if (tcpDragActive || tcpPreviewHold || !tcpMarker || !robot) return false;
-    const tip = findUrdfTcpObject();
-    if (!tip) return false;
-    tip.updateMatrixWorld(true);
+    if (!attachTcpMarkerToUrdfTip()) return false;
+    tcpMarker.updateMatrixWorld(true);
     const w = new THREE.Vector3();
-    tip.getWorldPosition(w);
-    // Tip link (gripper_centor / flan) is already the visual TCP — do NOT add
-    // yaml tcp_xyz again (that double-offset was pushing Cell B's ball ~18cm past jaws).
-    tcpMarker.position.copy(w);
-    tip.getWorldQuaternion(tcpMarker.quaternion);
-    tcpMarker.visible = true;
-    hasTcp = true;
+    tcpMarker.getWorldPosition(w);
     pushTrailWaypoint(w.x, w.y, w.z);
     return true;
   }
+  function syncFlangeMarkerFromLive() {
+    const flange = currentFlangePose();
+    if (flange && setFlangePose(flange)) return;
+    if (flangeMarker) flangeMarker.visible = false;
+  }
+  function syncFlangeMarkerFromIkCartesian(cart) {
+    // Blue ball follows flange of the joints currently being previewed / commanded.
+    if (!cart || !Array.isArray(cart.flange_xyzrpy)) return false;
+    return setFlangePose(cart.flange_xyzrpy);
+  }
   function syncTcpMarkerFromLive() {
+    // During drag/hold the amber ball is the IK target; do NOT reset blue ball from
+    // live WS flange (that freezes it until「恢复跟随」). Blue is updated from IK FK.
     if (tcpDragActive || tcpPreviewHold) return;
-    // Prefer URDF tip so the amber ball stays on the gripper mesh. FK cartesian
-    // (flange + tcp_xyz) can sit past a short EOAT model or diverge with provisional DH.
-    if (syncTcpMarkerFromUrdf()) return;
+    // Amber = FK TCP (cartesian_xyzrpy). Blue = FK flange (flange_xyzrpy, tool offset 0).
+    // Cell B: amber=TCP (EFG tip), blue=flange; URDF joints from teach MDH.
     const pose = currentPose();
-    if (pose) setTcpPose(pose);
-    else if (tcpMarker) { tcpMarker.visible = false; hasTcp = false; }
+    if (pose && setTcpPose(pose)) {
+      syncFlangeMarkerFromLive();
+      return;
+    }
+    if (syncTcpMarkerFromUrdf()) {
+      syncFlangeMarkerFromLive();
+      return;
+    }
+    if (tcpMarker) { tcpMarker.visible = false; hasTcp = false; }
+    setTcpRotGizmoVisible(false);
+    syncFlangeMarkerFromLive();
   }
   function tcpPointerOver(ev) {
     if (!tcpMarker || !tcpMarker.visible || !renderer) return false;
@@ -1341,11 +1717,16 @@ PAGE = r"""<!DOCTYPE html>
   function poseFromMarkerWorld() {
     if (!tcpMarker) return null;
     const rob = threeToRobot(tcpMarker.position.x, tcpMarker.position.y, tcpMarker.position.z);
-    return [rob.x, rob.y, rob.z, 0, 0, 0];
+    if (!_tcpTmpE) _tcpTmpE = new THREE.Euler();
+    _tcpTmpE.setFromQuaternion(tcpMarker.quaternion, 'XYZ');
+    const r = threeEulerToRobotRpy(_tcpTmpE.x, _tcpTmpE.y, _tcpTmpE.z);
+    return [rob.x, rob.y, rob.z, r.rx, r.ry, r.rz];
   }
   function beginTcpDrag() {
     // Leaving a held preview: continue from held ball / joints.
     tcpPreviewHold = false;
+    // Ball was parented to URDF tip for live follow — detach before free drag.
+    detachTcpMarkerToScene();
     // Seed from FK TCP (full xyzrpy) so the first IK is reachable. Mixing URDF-tip
     // xyz with FK rpy was a common source of residual~3e-2 failures.
     let src = currentPose();
@@ -1367,13 +1748,13 @@ PAGE = r"""<!DOCTYPE html>
       Number.isFinite(rz) ? rz : 0,
     ];
     if (dragVelThree) dragVelThree.set(0, 0, 0);
+    if (tcpDragMode !== 'rotate') dragRotVel = 0;
     openTcpDragPanel();
-    // Snap ball to the IK seed pose (FK frame) so drag deltas stay consistent.
-    const p0 = robotToThree(dragXyzrpy[0], dragXyzrpy[1], dragXyzrpy[2]);
-    tcpMarker.position.set(p0.x, p0.y, p0.z);
-    tcpMarker.visible = true;
-    hasTcp = true;
+    // Snap ball + rings to the IK seed pose (FK frame) so drag deltas stay consistent.
+    applyDragPoseToMarker();
+    setTcpRotGizmoVisible(true);
     tcpDragActive = true;
+    if (tcpDragMode !== 'rotate') tcpRotOriOk = true;
     dragPreviewJoints = currentJoints() || dragPreviewJoints;
     scheduleIk(true);
     return true;
@@ -1389,8 +1770,15 @@ PAGE = r"""<!DOCTYPE html>
     if (!tcpPointerDown) setDragStatus('', '求解 IK…');
     try {
       const seed = dragPreviewJoints || currentJoints();
-      const body = { arm_id: arm.id, xyzrpy: dragXyzrpy.slice(0, 6) };
+      const targetXyzrpy = dragXyzrpy.slice(0, 6);
+      const body = { arm_id: arm.id, xyzrpy: targetXyzrpy };
       if (Array.isArray(seed) && seed.length >= 6) body.seed_joints_rad = seed.slice(0, 6).map(Number);
+      // Rotate drag needs IK to respect orientation (translate path uses low ori_weight).
+      if (tcpDragMode === 'rotate') {
+        body.ori_weight = 1.25;
+        body.orientation_tolerance_rad = 0.04;
+        body.accept_residual = 8e-3;
+      }
       const r = await fetch('/api/arm/ik', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1403,18 +1791,49 @@ PAGE = r"""<!DOCTYPE html>
         const csv = fmtCsv6(dragPreviewJoints);
         if (csv) $('absJoints').value = csv;
         paintJointsFromArray(dragPreviewJoints);
-        // Refresh rpy from achieved FK so the next xyz-only drag step stays reachable
-        // (freezing start rpy forever makes CS66 IK fail after a few cm).
         const achieved = r.cartesian && r.cartesian.cartesian_xyzrpy;
-        if (Array.isArray(achieved) && achieved.length >= 6) {
-          dragXyzrpy[3] = Number(achieved[3]) || dragXyzrpy[3];
-          dragXyzrpy[4] = Number(achieved[4]) || dragXyzrpy[4];
-          dragXyzrpy[5] = Number(achieved[5]) || dragXyzrpy[5];
+        const oriErr = Array.isArray(achieved) ? rpyOriErr(targetXyzrpy, achieved) : Infinity;
+        if (tcpDragMode === 'rotate') {
+          // Keep user target rpy — do NOT clobber with position-only FK (old bug).
+          // Keep marker on target while dragging / until ori converges.
+          applyDragPoseToMarker();
+          syncFlangeMarkerFromIkCartesian(r.cartesian);
+          const posErr = (r.pos_err_m != null) ? (' · |Δp|=' + Number(r.pos_err_m).toFixed(4) + 'm') : '';
+          const oriTxt = ' · |Δrpy|=' + (Number.isFinite(oriErr) ? oriErr.toFixed(3) : '?') + 'rad';
+          if (oriErr > 0.08) {
+            tcpRotOriOk = false;
+            tcpAutoSendAfterIk = false;
+            setDragStatus('err', 'IK 姿态未跟上' + oriTxt + posErr + ' · 目标 ' + formatXyzrpy(targetXyzrpy));
+          } else {
+            tcpRotOriOk = true;
+            // Converged enough: optionally snap rpy to achieved for consistency.
+            if (Array.isArray(achieved) && achieved.length >= 6) {
+              for (let i = 3; i < 6; i++) {
+                const v = Number(achieved[i]);
+                if (Number.isFinite(v)) dragXyzrpy[i] = v;
+              }
+              applyDragPoseToMarker();
+            }
+            const auto = isTcpAutoSendOn();
+            setDragStatus('ok', 'IK ok' + oriTxt + posErr + (auto ? ' · 准备下发' : ' · 仅预览'));
+            if (auto) queueTcpIkSend();
+          }
+        } else {
+          // Translate: refresh rpy from achieved FK so next xyz step stays reachable.
+          if (Array.isArray(achieved) && achieved.length >= 6) {
+            for (let i = 3; i < 6; i++) {
+              const v = Number(achieved[i]);
+              if (Number.isFinite(v)) dragXyzrpy[i] = v;
+            }
+            const e = robotRpyToThreeEuler(dragXyzrpy[3], dragXyzrpy[4], dragXyzrpy[5]);
+            tcpMarker.rotation.set(e.x, e.y, e.z, 'XYZ');
+          }
+          syncFlangeMarkerFromIkCartesian(r.cartesian);
+          const posErr = (r.pos_err_m != null) ? (' · |Δp|=' + Number(r.pos_err_m).toFixed(4) + 'm') : '';
+          const auto = isTcpAutoSendOn();
+          setDragStatus('ok', 'IK ok' + posErr + (auto ? ' · 准备下发' : ' · 仅预览'));
+          if (auto) queueTcpIkSend();
         }
-        const posErr = (r.pos_err_m != null) ? (' · |Δp|=' + Number(r.pos_err_m).toFixed(4) + 'm') : '';
-        const auto = isTcpAutoSendOn();
-        setDragStatus('ok', 'IK ok' + posErr + (auto ? ' · 准备下发' : ' · 仅预览'));
-        if (auto) queueTcpIkSend();
       } else {
         tcpAutoSendAfterIk = false;
         setDragStatus('err', 'IK 失败: ' + ((r && r.error) ? String(r.error) : 'unknown'));
@@ -1424,6 +1843,7 @@ PAGE = r"""<!DOCTYPE html>
     } finally {
       ikInFlight = false;
       if (ikPending && tcpDragActive) { ikPending = false; scheduleIk(true); }
+      else maybeAutoResumeAfterDrag();
     }
   }
   function scheduleIk(force) {
@@ -1434,6 +1854,22 @@ PAGE = r"""<!DOCTYPE html>
   }
   function tickTcpDrag(dt) {
     if (!tcpDragActive || !dragXyzrpy || !tcpMarker || !dragVelThree) return;
+    if (tcpDragMode === 'rotate') {
+      // Pointer-down path applies angle in pointermove; here only coast + IK flush.
+      if (!tcpPointerDown && Math.abs(dragRotVel) > 1e-6) {
+        applyTcpRotationDelta(dragRotVel * dt);
+        dragRotVel *= Math.pow(TCP_ROT_DAMP, dt * 60);
+        if (Math.abs(dragRotVel) < 1e-5) dragRotVel = 0;
+        const axName = tcpRotAxis === 0 ? 'X' : (tcpRotAxis === 1 ? 'Y' : 'Z');
+        setDragStatus('', '旋转惯性 ' + axName + ' · 目标 ' + formatXyzrpy(dragXyzrpy));
+        scheduleIk(false);
+      } else if (ikPending) {
+        scheduleIk(true);
+      } else if (!tcpPointerDown && !ikInFlight) {
+        maybeAutoResumeAfterDrag();
+      }
+      return;
+    }
     if (dragVelThree.lengthSq() > 1e-12) {
       tcpMarker.position.x += dragVelThree.x * dt;
       tcpMarker.position.y += dragVelThree.y * dt;
@@ -1448,6 +1884,8 @@ PAGE = r"""<!DOCTYPE html>
       scheduleIk(false);
     } else if (ikPending) {
       scheduleIk(true);
+    } else {
+      maybeAutoResumeAfterDrag();
     }
   }
 
@@ -1496,6 +1934,19 @@ PAGE = r"""<!DOCTYPE html>
     tcpMarker.raycast = function() {};
     tcpMarker.visible = false;
     scene.add(tcpMarker);
+    buildTcpRotGizmo();
+    setTcpRotGizmoVisible(false);
+    // Blue = kinematic flange center (FK with tool offset [0,0,0]); not draggable.
+    flangeMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(FLANGE_MARKER_R, 14, 14),
+      new THREE.MeshBasicMaterial({ color: 0x3b82f6, depthTest: true }),
+    );
+    const flangeAxes = new THREE.AxesHelper(0.04);
+    flangeAxes.raycast = function() {};
+    flangeMarker.add(flangeAxes);
+    flangeMarker.raycast = function() {};
+    flangeMarker.visible = false;
+    scene.add(flangeMarker);
     dragVelThree = new THREE.Vector3();
     _trailColTmp = new THREE.Color();
     waypointGeom = new THREE.SphereGeometry(0.0035, 10, 10);
@@ -1551,6 +2002,23 @@ PAGE = r"""<!DOCTYPE html>
     function onTcpDocMove(ev) {
       if (!tcpPointerDown || !tcpDragActive || !dragXyzrpy) return;
       if (tcpDragPointerId != null && ev.pointerId !== tcpDragPointerId) return;
+      if (tcpDragMode === 'rotate') {
+        canvas._tcpLastPx = ev.clientX;
+        canvas._tcpLastPy = ev.clientY;
+        tcpMarker.updateMatrixWorld(true);
+        const ax = worldAxisForTcpRot(tcpRotAxis);
+        const ang = angleAroundTcpAxis(ev.clientX, ev.clientY, ax);
+        if (ang != null) {
+          let d = ang - tcpRotLastAngle;
+          while (d > Math.PI) d -= 2 * Math.PI;
+          while (d < -Math.PI) d += 2 * Math.PI;
+          tcpRotLastAngle = ang;
+          // Immediate follow (visible) + residual ω for damped coast on release.
+          applyTcpRotPointerDelta(d);
+        }
+        ev.preventDefault();
+        return;
+      }
       const dx = ev.clientX - (canvas._tcpLastPx || ev.clientX);
       const dy = ev.clientY - (canvas._tcpLastPy || ev.clientY);
       canvas._tcpLastPx = ev.clientX;
@@ -1563,17 +2031,41 @@ PAGE = r"""<!DOCTYPE html>
       if (tcpDragPointerId != null && ev && ev.pointerId != null && ev.pointerId !== tcpDragPointerId) return;
       tcpPointerDown = false;
       tcpDragPointerId = null;
+      highlightTcpRotAxis(-1);
       document.removeEventListener('pointermove', onTcpDocMove, true);
       document.removeEventListener('pointerup', endTcpPointer, true);
       document.removeEventListener('pointercancel', endTcpPointer, true);
       if (controls) controls.enabled = true;
       try { if (ev) canvas.releasePointerCapture(ev.pointerId); } catch (_) {}
       if (tcpDragActive) scheduleIk(true);
+      // Keep mode until auto-resume; next pointerdown will set again.
+      if (!tcpDragActive) tcpDragMode = 'translate';
     }
     canvas.addEventListener('pointerdown', (ev) => {
       if (ev.button !== 0) return;
-      if (!tcpPointerOver(ev)) return;
-      if (!beginTcpDrag()) return;
+      const ringHit = pickTcpRotRing(ev);
+      if (ringHit) {
+        tcpDragMode = 'rotate';
+        tcpRotAxis = ringHit.axis;
+        tcpRotOriOk = false;
+        if (!beginTcpDrag()) {
+          tcpDragMode = 'translate';
+          return;
+        }
+        if (dragVelThree) dragVelThree.set(0, 0, 0);
+        dragRotVel = 0;
+        highlightTcpRotAxis(tcpRotAxis);
+        tcpMarker.updateMatrixWorld(true);
+        const ax = worldAxisForTcpRot(tcpRotAxis);
+        const ang0 = angleAroundTcpAxis(ev.clientX, ev.clientY, ax);
+        tcpRotLastAngle = (ang0 == null) ? 0 : ang0;
+      } else if (tcpPointerOver(ev)) {
+        tcpDragMode = 'translate';
+        if (!beginTcpDrag()) return;
+        highlightTcpRotAxis(-1);
+      } else {
+        return;
+      }
       tcpPointerDown = true;
       tcpDragPointerId = ev.pointerId;
       if (controls) controls.enabled = false;
@@ -1639,6 +2131,7 @@ PAGE = r"""<!DOCTYPE html>
       if (!(dt > 0) || dt > 0.1) dt = 1 / 60;
       tickTcpDrag(dt);
       if (!tcpDragActive && !tcpPreviewHold) syncTcpMarkerFromLive();
+      if (tcpMarker && tcpMarker.visible) updateTcpRotGizmoScale();
       if (controls && controls.enableDamping) controls.update();
       renderer.render(scene, camera);
     })();
@@ -1646,6 +2139,11 @@ PAGE = r"""<!DOCTYPE html>
 
   function clearRobot() {
     if (tcpDragActive || tcpPreviewHold) resumeLiveTcpFollow();
+    detachTcpMarkerToScene();
+    if (tcpMarker) tcpMarker.visible = false;
+    setTcpRotGizmoVisible(false);
+    if (flangeMarker) flangeMarker.visible = false;
+    hasTcp = false;
     if (robot) { scene.remove(robot); robot = null; }
   }
 
@@ -1701,7 +2199,7 @@ PAGE = r"""<!DOCTYPE html>
         + ' · joints[' + keys.join(',') + ']'
         + ' · 拖拽旋转 / 琥珀球 IK · TCP 轨迹自动落点';
       paintJoints();
-      // Prefer FK pose; fall back to URDF tip (needed when CS66 FK unsupported).
+      // Prefer FK pose; fall back to URDF tip if FK warm/profile unavailable.
       syncTcpMarkerFromLive();
     }, undefined, (err) => {
       if (token !== loadToken) return;
@@ -1772,11 +2270,13 @@ PAGE = r"""<!DOCTYPE html>
         if (tcpDragActive || tcpPreviewHold) resumeLiveTcpFollow();
         if (a.id !== activeId) clearTrail();
         activeId = a.id;
+        maxDeltaDirty = false;
         renderArmList();
         loadModel(a);
         renderControls();
         paintConn();
         paintRead();
+        refreshArmMaxDeltaFromServer();
       };
       box.appendChild(b);
     });
@@ -1818,6 +2318,9 @@ PAGE = r"""<!DOCTYPE html>
     if (!arm.connected) {
       box.innerHTML = '<p class="hint">未连接 — 关节读数不可用</p>';
       $('poseLine').textContent = 'TCP —';
+      const fl = $('flangeLine');
+      if (fl) fl.textContent = '法兰 —';
+      if (flangeMarker) flangeMarker.visible = false;
       return;
     }
     const fr = framesByAgent[arm.read_agent];
@@ -1835,6 +2338,13 @@ PAGE = r"""<!DOCTYPE html>
     $('poseLine').textContent = Array.isArray(cart)
       ? ('TCP xyzrpy: ' + cart.map(x => Number(x).toFixed(3)).join(', '))
       : 'TCP —';
+    const flange = fr && fr.payload && fr.payload.flange_xyzrpy;
+    const flEl = $('flangeLine');
+    if (flEl) {
+      flEl.textContent = Array.isArray(flange)
+        ? ('法兰 xyzrpy: ' + flange.map(x => Number(x).toFixed(3)).join(', '))
+        : '法兰 —';
+    }
     paintJoints();
   }
 
@@ -1850,9 +2360,18 @@ PAGE = r"""<!DOCTYPE html>
     if (arms[0]) loadModel(arms[0]);
     renderControls();
     paintConn();
+    refreshArmMaxDeltaFromServer();
+
+    $('btnMaxDeltaApply').onclick = () => applyArmMaxDelta();
+    $('armMaxDelta').addEventListener('input', () => { maxDeltaDirty = true; });
+    $('armMaxDelta').addEventListener('change', () => { maxDeltaDirty = true; });
+    $('armMaxDelta').addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') applyArmMaxDelta();
+    });
 
     $('btnConnect').onclick = async () => {
       const a = activeArm(); if (!a) return;
+      resumeLiveTcpFollow();
       const r = await fetch('/api/arm/connect', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ arm_id: a.id }),
@@ -1980,10 +2499,27 @@ PAGE = r"""<!DOCTYPE html>
               const oa = arms.find((x) => x.id === na.id);
               return !oa || !!oa.connected !== !!na.connected;
             });
+            // Preserve in-progress maxΔ edits: WS arms replace would clobber the input via paintConn.
+            const dirtyId = maxDeltaDirty ? activeId : null;
+            const dirtyVal = dirtyId ? $('armMaxDelta').value : null;
             arms = msg.arms;
             if (!arms.find((x) => x.id === activeId) && arms[0]) activeId = arms[0].id;
-            if (connChanged || prev !== activeId) renderArmList();
-            else paintConn();
+            if (dirtyId && dirtyVal != null) {
+              const a = arms.find((x) => x.id === dirtyId);
+              // Keep model in sync with what the user is typing until Apply.
+              if (a) {
+                const n = Number(dirtyVal);
+                if (Number.isFinite(n)) a.max_delta_deg = n;
+              }
+            }
+            if (connChanged || prev !== activeId) {
+              if (prev !== activeId) maxDeltaDirty = false;
+              renderArmList();
+            } else paintConn();
+            if (dirtyId && dirtyId === activeId && dirtyVal != null && $('armMaxDelta')) {
+              $('armMaxDelta').value = dirtyVal;
+              maxDeltaDirty = true;
+            }
           }
           if (msg.arm_abs_ramp) {
             absRamp = msg.arm_abs_ramp;
@@ -2049,6 +2585,14 @@ class ArmIkBody(BaseModel):
     arm_id: str
     xyzrpy: list[float] = Field(min_length=6, max_length=6)
     seed_joints_rad: list[float] | None = None
+    ori_weight: float | None = None
+    orientation_tolerance_rad: float | None = None
+    accept_residual: float | None = None
+
+
+class ArmMaxDeltaBody(BaseModel):
+    arm_id: str
+    max_delta_deg: float
 
 
 def create_app(orch: Orchestrator) -> FastAPI:
@@ -2132,7 +2676,22 @@ def create_app(orch: Orchestrator) -> FastAPI:
 
     @app.post("/api/arm/ik")
     async def arm_ik(body: ArmIkBody) -> dict[str, Any]:
-        return orch.arm_ik(body.arm_id, body.xyzrpy, seed=body.seed_joints_rad)
+        return orch.arm_ik(
+            body.arm_id,
+            body.xyzrpy,
+            seed=body.seed_joints_rad,
+            ori_weight=body.ori_weight,
+            orientation_tolerance_rad=body.orientation_tolerance_rad,
+            accept_residual=body.accept_residual,
+        )
+
+    @app.get("/api/arm/max-delta")
+    async def arm_max_delta_get(arm_id: str) -> dict[str, Any]:
+        return orch.arm_max_delta_get(arm_id)
+
+    @app.post("/api/arm/max-delta")
+    async def arm_max_delta_set(body: ArmMaxDeltaBody) -> dict[str, Any]:
+        return orch.arm_max_delta_set(body.arm_id, body.max_delta_deg)
 
     @app.post("/api/shutdown")
     async def shutdown() -> dict[str, Any]:

@@ -137,7 +137,7 @@ def _load_fk_unlocked(pkg: str, prof: str | None):
         _fk_by_key[key] = fn
         return fn
     except Exception:  # noqa: BLE001
-        # e.g. cs66 profile supported:false until YAML is filled
+        # e.g. profile supported:false or import failure
         _fk_by_key[key] = False
         return False
 
@@ -546,7 +546,7 @@ def xyzrpy_to_joints_rad(
     if achieved is not None:
         tgt = [float(x) for x in list(xyzrpy)[:6]]
         pos_err = math.sqrt(sum((achieved[i] - tgt[i]) ** 2 for i in range(3)))
-        # Drag / provisional DH: allow a few cm; refuse only clear misses.
+        # Drag path: allow modest miss vs solver tol; refuse only clear outliers.
         if pos_err > max(float(position_tolerance_m) * 5.0, 2.5e-2):
             return {
                 "ok": False,
@@ -602,12 +602,20 @@ def cartesian_payload(
         kinematics=pkg,
         kinematics_profile=prof,
     )
+    # Flange = tool offset zero (same joints / kinematics backend).
+    flange = joints_rad_to_xyzrpy(
+        joints_rad,
+        tcp_xyz=(0.0, 0.0, 0.0),
+        kinematics=pkg,
+        kinematics_profile=prof,
+    )
     return {
         "cartesian_xyzrpy": xyzrpy,
         "cartesian_tcp_xyz": list(offset),
         "cartesian_frame": "base_tcp" if xyzrpy is not None else None,
         "cartesian_kinematics": pkg,
         "cartesian_kinematics_profile": prof,
+        "flange_xyzrpy": flange,
     }
 
 

@@ -155,14 +155,14 @@ BUILTIN_MODELS: dict[str, ModelCatalogEntry] = {
         backend="elite",
         kinematics="cs66_kinematics",
         kinematics_profile="elite_cs66",
-        urdf="/assets/models/cs66/cs66.urdf?v=cs66-ag95-1",
+        urdf="/assets/models/cs66/cs66.urdf?v=cs66-efg-c65-3",
         joint_names=["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"],
         joint_offset_rad=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         joint_signs=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
         mirror_y=False,
         notes=(
-            "From CS66urdf.rar; SDK=elite_cs_sdk via hik-sensors arm_cs_write; "
-            "FK/IK via sensors.cs66_kinematics (not sensors.kinematics)"
+            "URDF joints from teach MDH; meshes CS66urdf.rar; SDK=elite_cs_sdk via arm_cs_write. "
+            "FK/IK=sensors.cs66_kinematics/elite_cs66 (not sensors.kinematics)"
         ),
     ),
     "stub_6dof": ModelCatalogEntry(

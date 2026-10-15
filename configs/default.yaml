@@ -43,10 +43,11 @@ arms:
     product: CS66
     read_agent: arm-b-read
     write_agent: arm-b-write
-    home_joints_rad: [0.2, -0.3, 0.5, 0, 0.9, 0]
-    # Tool TCP (m, flange frame). URDF: flan→gripper_centor≈0.0335 + mesh≈0.09 → ~0.12
-    # (was 0.18 copied from EC616, which put the amber ball past the AG95 mesh).
-    tcp_xyz: [0.0, 0.0, 0.12]
+    # Dry-run home ≈ 交叉验证 IMG_9667 (deg→rad); FK/IK = elite_cs66 MDH.
+    home_joints_rad: [0.01044, -1.64208, 2.55021, -2.47928, 1.57057, -0.01733]
+    # Flange→EOAT tip (m): KWR75 face 0.0335 + EFG-C65 tip ≈0.117 (mount was CAD -Y).
+    # Flange-only check vs teach: set [0,0,0] (amber==blue ball).
+    tcp_xyz: [0.0, 0.0, 0.1505]
 
 # agents synthesized from arms: if omitted; explicit list keeps DCS-compatible shape
 agents:
