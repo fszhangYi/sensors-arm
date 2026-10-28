@@ -28,12 +28,16 @@
 
 | 用途 | API |
 |------|-----|
-| 配置/建连 | `EliteDriverConfig`、`EliteDriver(cfg)` |
-| 外控脚本 | `sendExternalControlScript()` |
-| 连通检查 | `isRobotConnected()` |
-| 流式写关节 | `writeServoj(joints_rad, timeout_ms, cartesian=False, queue=False)` |
-| 空闲/停止 | `writeIdle(...)`、`stopControl(...)` |
-| RTSI 读角 | `RtsiIOInterface(...)`、`connect` / `disconnect`、`getActualJointPositions()` |
+| 配置/建连 | `EliteDriverConfig`、`EliteDriver(cfg)` + **RTSI**（`require_rtsi`） |
+| 上电/松闸（Arm 前） | `primaryPort().powerOn()`、`brakeRelease()` |
+| 外控脚本 | `sendExternalControlScript()`（`headless_mode=true`） |
+| 连通检查 | **须** `isRobotConnected()` 为真后再 `writeServoj` |
+| 流式写关节 | 插值后多次 `writeServoj(pos, timeout_ms, cartesian=False)` |
+| 空闲保活 | Armed 时周期 `writeIdle`；失败自动 Disarm |
+| 停止 | `stopControl(...)` |
+| RTSI 读角 | `RtsiIOInterface` → `getActualJointPositions()`（**Arm/jog 门控依赖**） |
+
+说明：无 RTSI measured 关节时拒绝 Arm/jog。`writeServoj returned false` / 三口 EOF → 反向通道或脚本超时；见 [cs66-live-control-checklist.md](cs66-live-control-checklist.md)。
 
 ---
 

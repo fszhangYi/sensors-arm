@@ -6,10 +6,12 @@ Inverse: TCP xyzrpy → flange target → ``ik_flange`` → joints (rad).
 Backend selection (per arm model):
 - ``kinematics`` → ``sensors.kinematics`` (EC616 / default)
 - ``cs66_kinematics`` → ``sensors.cs66_kinematics`` (Cell B CS66)
+- ``cs66_kin_g26562`` → ``sensors.cs66_kin_g26562`` (Cell C CS66 / G26562)
 """
 
 from __future__ import annotations
 
+import importlib
 import math
 import threading
 from typing import Any, Callable, Sequence
@@ -25,6 +27,13 @@ DEFAULT_TCP_XYZ: tuple[float, float, float] = (0.0, 0.0, 0.18)
 
 PKG_LEGACY = "kinematics"
 PKG_CS66 = "cs66_kinematics"
+PKG_CS66_G26562 = "cs66_kin_g26562"
+
+# Normalized package id → import path for YAML-backed CS66 FK/IK.
+_CS66_YAML_MODULES: dict[str, str] = {
+    PKG_CS66: "sensors.cs66_kinematics",
+    PKG_CS66_G26562: "sensors.cs66_kin_g26562",
+}
 
 # Process-wide active offset (set from DCS YAML ``tcp_xyz`` at Orchestrator boot).
 _active_tcp_xyz: tuple[float, float, float] = DEFAULT_TCP_XYZ
@@ -72,6 +81,8 @@ def resolve_tcp_xyz(
 
 
 _fk_by_key: dict[str, Callable[[list[float]], np.ndarray] | bool] = {}
+# Cached IK backend: {IkResult, ik_flange, kin_cfg|None}
+_ik_backend_by_key: dict[str, dict[str, Any] | bool] = {}
 _scipy_rotation = None
 _fk_warm_done = False
 _fk_warm_lock = threading.Lock()
@@ -79,8 +90,8 @@ _fk_warm_lock = threading.Lock()
 
 def _kin_key(package: str, profile_id: str | None) -> str:
     pkg = (package or PKG_LEGACY).strip() or PKG_LEGACY
-    if pkg == PKG_CS66:
-        return f"{PKG_CS66}:{(profile_id or 'elite_cs66').strip()}"
+    if pkg in _CS66_YAML_MODULES:
+        return f"{pkg}:{(profile_id or 'elite_cs66').strip()}"
     return f"{PKG_LEGACY}:"
 
 
@@ -92,7 +103,17 @@ def normalize_kinematics(
     pkg = (package or PKG_LEGACY).strip() or PKG_LEGACY
     if pkg in ("cs66", "cs66_kinematics", "sensors.cs66_kinematics"):
         return PKG_CS66, (profile_id or "elite_cs66").strip()
+    if pkg in ("cs66_kin_g26562", "sensors.cs66_kin_g26562", "cs66_g26562"):
+        return PKG_CS66_G26562, (profile_id or "elite_cs66").strip()
     return PKG_LEGACY, None
+
+
+def _import_cs66_yaml(package: str):
+    """Import ``sensors.cs66_*`` module for a normalized CS YAML package id."""
+    mod_name = _CS66_YAML_MODULES.get(package)
+    if not mod_name:
+        raise ImportError(f"not a CS66 YAML kinematics package: {package}")
+    return importlib.import_module(mod_name)
 
 
 def kinematics_ready(
@@ -126,10 +147,9 @@ def _load_fk_unlocked(pkg: str, prof: str | None):
         return cached
     _ensure_scipy()
     try:
-        if pkg == PKG_CS66:
-            from sensors.cs66_kinematics import make_hik_fk_fn
-
-            fn = make_hik_fk_fn(prof)
+        if pkg in _CS66_YAML_MODULES:
+            mod = _import_cs66_yaml(pkg)
+            fn = mod.make_hik_fk_fn(prof)
         else:
             from sensors.kinematics import make_hik_fk_fn
 
@@ -156,21 +176,98 @@ def _get_fk(
         return _load_fk_unlocked(pkg, prof)
 
 
+def _load_ik_backend_unlocked(pkg: str, prof: str | None) -> dict[str, Any] | bool:
+    """Import + cache ``ik_flange`` / config for ``pkg``; caller holds ``_fk_warm_lock``."""
+    key = _kin_key(pkg, prof)
+    cached = _ik_backend_by_key.get(key)
+    if cached is not None:
+        return cached
+    try:
+        if pkg in _CS66_YAML_MODULES:
+            mod = _import_cs66_yaml(pkg)
+            model_mod = importlib.import_module(f"{_CS66_YAML_MODULES[pkg]}.model")
+            backend: dict[str, Any] = {
+                "IkResult": model_mod.IkResult,
+                "ik_flange": mod.ik_flange,
+                "kin_cfg": mod.get_kinematic_config(prof),
+            }
+        else:
+            from sensors.kinematics import ik_flange
+            from sensors.kinematics.model import IkResult
+
+            backend = {
+                "IkResult": IkResult,
+                "ik_flange": ik_flange,
+                "kin_cfg": None,
+            }
+        _ik_backend_by_key[key] = backend
+        return backend
+    except Exception:  # noqa: BLE001
+        _ik_backend_by_key[key] = False
+        return False
+
+
+def _get_ik_backend(
+    package: str | None = None,
+    profile_id: str | None = None,
+) -> dict[str, Any] | bool:
+    pkg, prof = normalize_kinematics(package, profile_id)
+    key = _kin_key(pkg, prof)
+    cached = _ik_backend_by_key.get(key)
+    if cached is not None:
+        return cached
+    with _fk_warm_lock:
+        return _load_ik_backend_unlocked(pkg, prof)
+
+
 def warm_kinematics(
     backends: Sequence[tuple[str, str | None]] | None = None,
 ) -> None:
-    """Preload FK + scipy (avoids dual-agent import deadlock).
+    """Preload FK + IK + scipy (avoids first-drag cold start).
 
-    ``backends``: list of ``(package, profile_id)``; default warms legacy + cs66/elite_cs66.
+    ``backends``: list of ``(package, profile_id)``; default warms legacy + both CS66 YAML packs.
     """
     global _fk_warm_done
-    specs = list(backends) if backends else [(PKG_LEGACY, None), (PKG_CS66, "elite_cs66")]
+    specs = list(backends) if backends else [
+        (PKG_LEGACY, None),
+        (PKG_CS66, "elite_cs66"),
+        (PKG_CS66_G26562, "elite_cs66"),
+    ]
     with _fk_warm_lock:
         _ensure_scipy()
         for package, profile_id in specs:
             pkg, prof = normalize_kinematics(package, profile_id)
             _load_fk_unlocked(pkg, prof)
+            _load_ik_backend_unlocked(pkg, prof)
         _fk_warm_done = True
+    # Dummy LM IK outside lock so first amber-ball drag is warm.
+    for package, profile_id in specs:
+        pkg, prof = normalize_kinematics(package, profile_id)
+        try:
+            backend = _get_ik_backend(pkg, prof)
+            if backend is False or not isinstance(backend, dict):
+                continue
+            seed = [0.0, -0.5, 1.0, -0.5, 1.2, 0.0]
+            pose = joints_rad_to_xyzrpy(
+                seed,
+                kinematics=pkg,
+                kinematics_profile=prof,
+            )
+            if pose is None:
+                continue
+            xyzrpy_to_joints_rad(
+                pose,
+                q_seed_rad=seed,
+                kinematics=pkg,
+                kinematics_profile=prof,
+                interactive=True,
+                max_nfev=40,
+                multi_seed=False,
+                soft_limit_retry=False,
+                enforce_teach_soft_limits=False,
+            )
+        except Exception:  # noqa: BLE001
+            continue
 
 
 def _tcp_matrix(tcp_xyz: tuple[float, float, float]) -> np.ndarray:
@@ -428,10 +525,13 @@ def xyzrpy_to_joints_rad(
     soft_limit_retry: bool = True,
     ori_weight: float = 0.25,
     multi_seed: bool = True,
+    interactive: bool = False,
+    solver_tol: float | None = None,
 ) -> dict[str, Any]:
     """IK: TCP ``xyzrpy`` → ``joints_rad`` (seeded by current arm joints).
 
-    ``next_state`` from pi05 serve is Cartesian TCP pose, not joint angles.
+    ``interactive=True`` (TCP drag): prefer fast unbounded LM, skip soft-limit TRF
+    and multi-seed by default — soft TRF + 2-point jac was the main drag lag source.
     """
     pkg, prof = normalize_kinematics(kinematics, kinematics_profile)
     offset = resolve_tcp_xyz(tcp_xyz)
@@ -449,28 +549,37 @@ def xyzrpy_to_joints_rad(
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"invalid xyzrpy: {e}", "joints_rad": None}
 
-    kin_cfg = None
-    try:
-        if pkg == PKG_CS66:
-            from sensors.cs66_kinematics import get_kinematic_config, ik_flange
-            from sensors.cs66_kinematics.model import IkResult
+    backend = _get_ik_backend(pkg, prof)
+    if backend is False or not isinstance(backend, dict):
+        return {"ok": False, "error": f"IK unavailable ({pkg})", "joints_rad": None}
+    IkResult = backend["IkResult"]
+    ik_flange = backend["ik_flange"]
+    kin_cfg = backend.get("kin_cfg")
 
-            kin_cfg = get_kinematic_config(prof)
-        else:
-            from sensors.kinematics import ik_flange
-            from sensors.kinematics.model import IkResult
-    except Exception as e:  # noqa: BLE001
-        return {"ok": False, "error": f"IK unavailable ({pkg}): {e}", "joints_rad": None}
+    # Interactive defaults: LM (no bounds), modest nfev, looser solver tol.
+    # Caller (runtime) sets multi_seed / max_nfev explicitly for escalate.
+    use_interactive = bool(interactive)
+    if use_interactive:
+        enforce_teach_soft_limits = False
+        soft_limit_retry = False
+        if max_nfev >= 600:
+            max_nfev = 80
+        if solver_tol is None:
+            solver_tol = 1e-6
+        if accept_residual < 2e-2:
+            accept_residual = 2e-2
+        if position_tolerance_m < 3e-3:
+            position_tolerance_m = 3e-3
 
-    nfev_cap = max(40, int(max_nfev))
+    nfev_cap = max(20, int(max_nfev))
     seed_list: list[list[float]] = [list(seed)]
     if multi_seed:
+        # Keep escalate seeds small — full 6×4 grid made drag unusable.
         for axis in range(6):
-            for delta in (0.2, -0.2, 0.45, -0.45):
+            for delta in (0.25, -0.25):
                 s2 = list(seed)
                 s2[axis] = float(s2[axis]) + delta
                 seed_list.append(s2)
-        seed_list.append([0.0] * 6)
 
     def _run(*, soft_limits: bool, seed_rad: list[float]) -> Any:
         seed_deg = np.rad2deg(np.asarray(seed_rad, dtype=np.float64))
@@ -481,17 +590,21 @@ def xyzrpy_to_joints_rad(
             "position_tolerance_m": float(position_tolerance_m),
             "orientation_tolerance_rad": float(orientation_tolerance_rad),
             "ori_weight": float(ori_weight),
+            "lm_method": "lm",
         }
         if kin_cfg is not None:
             kwargs["kin_cfg"] = kin_cfg
+        if solver_tol is not None:
+            kwargs["solver_tol"] = float(solver_tol)
         return ik_flange(T_flange, seed_deg, **kwargs)
 
     result = None
     last_err: str | None = None
     best_effort: Any = None
-    soft_attempts = [bool(enforce_teach_soft_limits)]
-    if soft_limit_retry and enforce_teach_soft_limits:
-        soft_attempts.append(False)  # retry without soft-limit bounds if needed
+    # Soft-limit TRF is slow (numerical jac). Interactive: LM only.
+    soft_attempts = [False] if use_interactive else [bool(enforce_teach_soft_limits)]
+    if (not use_interactive) and soft_limit_retry and enforce_teach_soft_limits:
+        soft_attempts.append(False)
     for soft in soft_attempts:
         for seed_rad in seed_list:
             try:
@@ -506,7 +619,6 @@ def xyzrpy_to_joints_rad(
                 best_effort.residual_norm
             ):
                 best_effort = cand
-            # Accept official success, or a usable residual when LM stops on ftol early.
             if cand.success or float(cand.residual_norm) <= float(accept_residual):
                 result = cand
                 break
@@ -518,7 +630,6 @@ def xyzrpy_to_joints_rad(
             break
 
     if result is None and best_effort is not None:
-        # Last resort: keep best residual if position part looks usable after FK check.
         result = best_effort
 
     if result is None:
@@ -535,7 +646,6 @@ def xyzrpy_to_joints_rad(
     if any(not math.isfinite(x) for x in joints):
         return {"ok": False, "error": "IK returned non-finite joints", "joints_rad": None}
 
-    # Final FK check in TCP frame (same path as joints_rad_to_xyzrpy).
     achieved = joints_rad_to_xyzrpy(
         joints,
         tcp_xyz=offset,
@@ -546,7 +656,6 @@ def xyzrpy_to_joints_rad(
     if achieved is not None:
         tgt = [float(x) for x in list(xyzrpy)[:6]]
         pos_err = math.sqrt(sum((achieved[i] - tgt[i]) ** 2 for i in range(3)))
-        # Drag path: allow modest miss vs solver tol; refuse only clear outliers.
         if pos_err > max(float(position_tolerance_m) * 5.0, 2.5e-2):
             return {
                 "ok": False,
@@ -583,6 +692,8 @@ def xyzrpy_to_joints_rad(
         "pos_err_m": pos_err,
         "kinematics": pkg,
         "kinematics_profile": prof,
+        "interactive": use_interactive,
+        "achieved_xyzrpy": achieved,
     }
 
 

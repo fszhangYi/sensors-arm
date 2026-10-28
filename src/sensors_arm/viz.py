@@ -213,6 +213,16 @@ PAGE = r"""<!DOCTYPE html>
       box-shadow: 0 0 0 2px rgba(127,217,154,0.2), 0 0 10px rgba(127,217,154,0.55);
     }
     .conn-row { margin: 0.55rem 0 0.65rem; }
+    .remote-block { margin: 0.85rem 0 0.35rem; }
+    .remote-block .ip-row .v {
+      color: var(--text, #e8eef7);
+      outline: none;
+    }
+    .remote-block .ip-row .v:focus {
+      color: var(--accent);
+    }
+    .remote-hint-ok { color: var(--ok) !important; }
+    .remote-hint-err { color: var(--danger, #f07178) !important; }
     .copy-row { margin: 0.4rem 0 0.65rem; }
     .copy-row .hint { margin: 0; align-self: center; color: var(--accent); font-size: 0.72rem; }
     .ip-row {
@@ -598,6 +608,39 @@ PAGE = r"""<!DOCTYPE html>
       font-size: 0.74rem;
       border-radius: 8px;
     }
+    button.state-on {
+      box-shadow: 0 0 0 2px rgba(127,217,154,0.55), 0 0 18px rgba(127,217,154,0.22);
+      filter: none;
+      opacity: 1;
+    }
+    button.ok.state-on, button#btnArm.state-on {
+      border-color: rgba(127,217,154,0.85);
+      background: linear-gradient(180deg, rgba(127,217,154,0.45), rgba(61,214,198,0.2));
+      color: #eafff2;
+    }
+    button.danger.state-on, button#btnDisarm.state-on {
+      border-color: rgba(240,113,120,0.8);
+      background: linear-gradient(180deg, rgba(240,113,120,0.4), rgba(240,113,120,0.16));
+      color: #ffe0e3;
+      box-shadow: 0 0 0 2px rgba(240,113,120,0.45), 0 0 18px rgba(240,113,120,0.18);
+    }
+    #remoteDiffLog {
+      margin: 0.25rem 0 0.5rem;
+      padding: 0.45rem 0.55rem;
+      border-radius: 8px;
+      border: 1px solid rgba(240,113,120,0.28);
+      background: rgba(0,0,0,0.28);
+      color: #ffc4c8;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.68rem;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 9rem;
+      overflow: auto;
+      display: none;
+    }
+    #remoteDiffLog.show { display: block; }
     .jog-row button {
       min-width: 2.1rem;
       padding: 0.28rem 0.5rem;
@@ -722,6 +765,22 @@ PAGE = r"""<!DOCTYPE html>
         <button type="button" class="danger" id="btnDisconnect" disabled>断开</button>
       </div>
       <p class="hint" id="connHint">当前臂：未连接</p>
+      <div class="remote-block">
+        <h2>远程关节</h2>
+        <p class="hint">拉取 Gello 等源的 6 轴 JSON（字段 joints，rad），驱动本 Cell 三维画布；连接成功后自动 Disarm 一次。</p>
+        <div class="ip-row" title="远程 joints 地址，如 http://127.0.0.1:7020/joints">
+          <span class="k">URL</span>
+          <input type="text" class="v" id="remoteUrl" placeholder="http://127.0.0.1:7020/joints" autocomplete="off" spellcheck="false"/>
+        </div>
+        <div class="row conn-row">
+          <button type="button" class="ok" id="btnRemoteConnect">拉取</button>
+          <button type="button" class="danger" id="btnRemoteDisconnect" disabled>停止</button>
+          <button type="button" class="ghost" id="btnRemotePrecheck" disabled title="采样 5s 确认静止后与硬件关节比 &lt;2°">预下发</button>
+          <button type="button" class="ok" id="btnRemoteSend" disabled title="预检通过后：实时远程 joints → CS dense writeServoj（servoj_once，无嵌套斜坡/无每点 idle）；再点停止">远程连续下发</button>
+        </div>
+        <p class="hint" id="remoteHint">未拉取远程</p>
+        <pre id="remoteDiffLog" aria-live="polite"></pre>
+      </div>
     </aside>
     <section class="panel" id="stageWrap">
       <h2 id="viewTitle">3D</h2>
@@ -758,6 +817,7 @@ PAGE = r"""<!DOCTYPE html>
     <aside class="panel">
       <h2>Read</h2>
       <div id="jointRead"></div>
+      <p class="hint" id="jointsLine">joints —</p>
       <p class="hint" id="poseLine">TCP —</p>
       <p class="hint" id="flangeLine">法兰 —</p>
       <div class="row copy-row">
@@ -801,6 +861,9 @@ PAGE = r"""<!DOCTYPE html>
   let arms = [];
   let activeId = null;
   let framesByAgent = {};
+  /** Per-cell remote joints stream: { url, on, joints, step, es, pollTimer, abort }. */
+  const remoteByArm = {};
+  const LS_REMOTE_URL = 'sensors-arm.remoteUrl.';
   let robot = null;
   let scene, camera, renderer, clock, controls;
   let loadToken = 0;
@@ -847,7 +910,8 @@ PAGE = r"""<!DOCTYPE html>
   const TCP_ROT_IMPULSE = 55.0; // pointer Δangle → residual ω / mass (coast after release)
   const TCP_ROT_DAMP = 0.94; // lighter than translate damp — coast stays visible
   const TCP_ROT_DIRECT = 0.85; // fraction of pointer Δangle applied immediately while dragging
-  const IK_MIN_INTERVAL_MS = 80;
+  // Server interactive IK is LM (~ms); ~25 Hz is enough for amber-ball preview.
+  const IK_MIN_INTERVAL_MS = 40;
   const LS_TCP_MASS = 'sensors-arm.tcpMass';
   const LS_TCP_AUTO_SEND = 'sensors-arm.tcpAutoSend';
   let tcpMassCached = TCP_MASS_DEFAULT;
@@ -939,9 +1003,637 @@ PAGE = r"""<!DOCTYPE html>
     document.body.removeChild(ta);
   }
 
+  const REMOTE_PRECHECK_S = 5;
+  const REMOTE_STABLE_MAX_DEG = 0.5;
+  const REMOTE_SEND_MAX_DELTA_DEG = 2;
+
+  function remoteState(armId) {
+    if (!armId) return null;
+    if (!remoteByArm[armId]) {
+      remoteByArm[armId] = {
+        url: '',
+        on: false,
+        joints: null,
+        step: 0,
+        es: null,
+        pollTimer: null,
+        mode: '',
+        sendReady: false,
+        queuedJoints: null,
+        prechecking: false,
+        precheckToken: 0,
+        /** Continuous direct write of live remote joints (no abs-ramp). */
+        remoteStreaming: false,
+        streamWriteInFlight: false,
+        streamWritePending: null,
+        lastStreamedStep: null,
+      };
+    }
+    return remoteByArm[armId];
+  }
+
+  function isArmed(arm) {
+    if (!arm || !arm.write_agent) return false;
+    const fr = framesByAgent[arm.write_agent];
+    return !!(fr && fr.payload && fr.payload.armed);
+  }
+
+  function hardwareJoints(arm) {
+    if (!arm || !arm.connected) return null;
+    const fr = framesByAgent[arm.read_agent];
+    const j = fr && fr.payload && fr.payload.joints_rad;
+    if (!Array.isArray(j) || j.length < 6) return null;
+    const out = [];
+    for (let i = 0; i < 6; i++) {
+      const v = Number(j[i]);
+      if (!Number.isFinite(v)) return null;
+      out.push(v);
+    }
+    return out;
+  }
+
+  function stopRemoteStreaming(armId) {
+    const st = remoteState(armId);
+    if (!st) return;
+    st.remoteStreaming = false;
+    st.streamWritePending = null;
+    st.streamWriteInFlight = false;
+  }
+
+  function clearRemoteSendGate(armId, reason) {
+    const st = remoteState(armId);
+    if (!st) return;
+    st.sendReady = false;
+    st.queuedJoints = null;
+    st.prechecking = false;
+    st.precheckToken = (st.precheckToken || 0) + 1;
+    stopRemoteStreaming(armId);
+    if (armId === activeId) {
+      paintRemoteButtons();
+      paintRemoteHint();
+      if (reason) {
+        const el = $('remoteHint');
+        if (el && st.on) {
+          el.textContent = (el.textContent || '') + ' · ' + reason;
+        }
+      }
+    }
+  }
+
+  function showRemoteDiffLog(text) {
+    const el = $('remoteDiffLog');
+    if (!el) return;
+    if (!text) {
+      el.textContent = '';
+      el.classList.remove('show');
+      return;
+    }
+    el.textContent = text;
+    el.classList.add('show');
+  }
+
+  function paintArmButtons() {
+    const arm = activeArm();
+    const on = !!(arm && arm.connected);
+    const armed = isArmed(arm);
+    const btnA = $('btnArm');
+    const btnD = $('btnDisarm');
+    if (btnA) {
+      btnA.disabled = !on;
+      btnA.classList.toggle('state-on', on && armed);
+      btnA.textContent = (on && armed) ? 'Armed' : 'Arm';
+      btnA.title = (on && armed) ? '已使能' : '使能写通道';
+    }
+    if (btnD) {
+      btnD.disabled = !on;
+      btnD.classList.toggle('state-on', on && !armed);
+      btnD.textContent = (on && !armed) ? 'Disarmed' : 'Disarm';
+      btnD.title = (on && !armed) ? '已下使能' : '下使能并停止';
+    }
+    ['btnHomeGo', 'btnHomeSet'].forEach((id) => {
+      const el = $(id);
+      if (el) el.disabled = !on;
+    });
+  }
+
+  function paintRemoteButtons() {
+    const arm = activeArm();
+    const btnPre = $('btnRemotePrecheck');
+    const btnSend = $('btnRemoteSend');
+    const btnC = $('btnRemoteConnect');
+    const btnD = $('btnRemoteDisconnect');
+    const urlEl = $('remoteUrl');
+    if (!arm) {
+      if (btnPre) btnPre.disabled = true;
+      if (btnSend) btnSend.disabled = true;
+      if (btnC) btnC.disabled = true;
+      if (btnD) btnD.disabled = true;
+      if (urlEl) urlEl.disabled = true;
+      return;
+    }
+    const st = remoteState(arm.id);
+    const armed = isArmed(arm);
+    const connected = !!arm.connected;
+    if (urlEl && document.activeElement !== urlEl) {
+      urlEl.value = st.url || '';
+      urlEl.disabled = !!st.on;
+    }
+    if (btnC) btnC.disabled = !!st.on;
+    if (btnD) btnD.disabled = !st.on;
+    // 预下发: 远程拉取中 + 臂已连接 + Armed + 未在预检/连续下发
+    if (btnPre) {
+      btnPre.disabled = !(st.on && connected && armed && !st.prechecking && !st.remoteStreaming);
+      btnPre.textContent = st.prechecking ? '预检中…' : '预下发';
+    }
+    // 远程连续下发: 预检通过后可启动；运行中再点即停止
+    if (btnSend) {
+      if (st.remoteStreaming) {
+        btnSend.disabled = false;
+        btnSend.textContent = '停止连续下发';
+        btnSend.classList.remove('ok');
+        btnSend.classList.add('danger');
+      } else {
+        btnSend.disabled = !(st.on && connected && armed && st.sendReady && !st.prechecking);
+        btnSend.textContent = '远程连续下发';
+        btnSend.classList.add('ok');
+        btnSend.classList.remove('danger');
+      }
+    }
+  }
+
+  function extractRemoteJoints(obj) {
+    if (!obj || typeof obj !== 'object') return null;
+    const arr = obj.joints != null ? obj.joints : obj.pose;
+    if (!Array.isArray(arr) || arr.length < 6) return null;
+    const out = [];
+    for (let i = 0; i < 6; i++) {
+      const v = Number(arr[i]);
+      if (!Number.isFinite(v)) return null;
+      out.push(v);
+    }
+    return out;
+  }
+
+  function applyRemoteFrame(armId, obj) {
+    const st = remoteState(armId);
+    if (!st || !st.on) return;
+    const j = extractRemoteJoints(obj);
+    if (!j) return;
+    st.joints = j;
+    st.step = Number(obj.step) || 0;
+    if (st.remoteStreaming) {
+      enqueueRemoteStreamWrite(armId, j, st.step);
+    }
+    if (armId === activeId) {
+      paintRemoteHint();
+      paintJoints();
+      paintReadRemoteOverlay();
+    }
+  }
+
+  function paintRemoteHint() {
+    const arm = activeArm();
+    const el = $('remoteHint');
+    if (!el) return;
+    if (!arm) {
+      el.textContent = '未选臂';
+      el.className = 'hint';
+      paintRemoteButtons();
+      return;
+    }
+    const st = remoteState(arm.id);
+    if (st.prechecking) {
+      el.textContent = '预下发采样中（' + REMOTE_PRECHECK_S + 's 静止检测）…';
+      el.className = 'hint';
+    } else if (st.remoteStreaming) {
+      const step = st.step != null ? st.step : '—';
+      el.textContent = '远程连续下发中 · CS servoj_once · step=' + step + '（再点按钮停止）';
+      el.className = 'hint remote-hint-ok';
+    } else if (st.on) {
+      const step = st.step != null ? st.step : '—';
+      let msg = '远程拉取中 · step=' + step + (st.mode ? (' · ' + st.mode) : '');
+      if (st.sendReady) msg += ' · 预检通过，可远程连续下发';
+      el.textContent = msg;
+      el.className = 'hint remote-hint-ok';
+    } else {
+      el.textContent = '未拉取远程';
+      el.className = 'hint';
+    }
+    paintRemoteButtons();
+  }
+
+  function jointDiffRows(remoteJ, hwJ) {
+    const rows = [];
+    for (let i = 0; i < 6; i++) {
+      const dRad = Number(remoteJ[i]) - Number(hwJ[i]);
+      const dDeg = dRad * DEG;
+      rows.push({ i: i + 1, dDeg: dDeg, abs: Math.abs(dDeg), remote: Number(remoteJ[i]), hw: Number(hwJ[i]) });
+    }
+    rows.sort((a, b) => b.abs - a.abs);
+    return rows;
+  }
+
+  function formatRemoteDiffFail(remoteJ, rows) {
+    const rj = remoteJ.map((x) => Number(x).toFixed(6)).join(', ');
+    let lines = ['remote joints (rad): [' + rj + ']', 'Δdeg (desc):'];
+    rows.forEach((r) => {
+      lines.push(
+        '  J' + r.i + '  Δ=' + (r.dDeg >= 0 ? '+' : '') + r.dDeg.toFixed(3)
+          + '°  remote=' + r.remote.toFixed(4) + '  hw=' + r.hw.toFixed(4)
+      );
+    });
+    return lines.join('\n');
+  }
+
+  async function remotePrecheckActive() {
+    const arm = activeArm();
+    if (!arm) return;
+    const st = remoteState(arm.id);
+    if (!st.on) { toast('请先拉取远程'); return; }
+    if (!arm.connected) { toast('请先连接机械臂'); return; }
+    if (!isArmed(arm)) { toast('请先 Arm 使能'); return; }
+    if (st.prechecking || st.remoteStreaming) return;
+
+    st.sendReady = false;
+    st.queuedJoints = null;
+    st.prechecking = true;
+    const token = (st.precheckToken || 0) + 1;
+    st.precheckToken = token;
+    showRemoteDiffLog('');
+    paintRemoteHint();
+
+    const samples = [];
+    const t0 = performance.now();
+    const deadline = t0 + REMOTE_PRECHECK_S * 1000;
+    while (performance.now() < deadline) {
+      if (st.precheckToken !== token) return; // aborted (disarm / stop)
+      if (!st.on) {
+        st.prechecking = false;
+        toast('远程已停止，预检取消');
+        paintRemoteHint();
+        return;
+      }
+      if (!arm.connected || !isArmed(arm)) {
+        st.prechecking = false;
+        toast('连接/Arm 状态变化，预检取消');
+        paintRemoteHint();
+        return;
+      }
+      if (Array.isArray(st.joints) && st.joints.length >= 6) {
+        samples.push(st.joints.slice(0, 6));
+      }
+      const left = Math.max(0, deadline - performance.now());
+      const el = $('remoteHint');
+      if (el) {
+        el.textContent = '预下发采样中… ' + (left / 1000).toFixed(1) + 's · n=' + samples.length;
+        el.className = 'hint';
+      }
+      paintRemoteButtons();
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    if (st.precheckToken !== token) return;
+    st.prechecking = false;
+
+    if (samples.length < 10) {
+      toast('预检失败：远程样本过少');
+      paintRemoteHint();
+      return;
+    }
+    // Peak-to-peak per joint over the window → source must be still.
+    const mins = samples[0].slice();
+    const maxs = samples[0].slice();
+    for (let s = 1; s < samples.length; s++) {
+      for (let i = 0; i < 6; i++) {
+        const v = samples[s][i];
+        if (v < mins[i]) mins[i] = v;
+        if (v > maxs[i]) maxs[i] = v;
+      }
+    }
+    let moveMaxDeg = 0;
+    let moveJoint = 1;
+    for (let i = 0; i < 6; i++) {
+      const d = Math.abs(maxs[i] - mins[i]) * DEG;
+      if (d > moveMaxDeg) { moveMaxDeg = d; moveJoint = i + 1; }
+    }
+    if (moveMaxDeg > REMOTE_STABLE_MAX_DEG) {
+      toast('预检失败：数据源在动 J' + moveJoint + ' Δ=' + moveMaxDeg.toFixed(2) + '°');
+      showRemoteDiffLog(
+        'source not still over ' + REMOTE_PRECHECK_S + 's\n'
+          + 'max peak-to-peak: J' + moveJoint + ' = ' + moveMaxDeg.toFixed(3) + '° (limit ' + REMOTE_STABLE_MAX_DEG + '°)'
+      );
+      paintRemoteHint();
+      return;
+    }
+
+    const remoteJ = (Array.isArray(st.joints) ? st.joints : samples[samples.length - 1]).slice(0, 6);
+    const hwJ = hardwareJoints(arm);
+    if (!hwJ) {
+      toast('预检失败：无硬件关节读数');
+      paintRemoteHint();
+      return;
+    }
+    const rows = jointDiffRows(remoteJ, hwJ);
+    const maxAbs = rows.length ? rows[0].abs : Infinity;
+    if (!(maxAbs < REMOTE_SEND_MAX_DELTA_DEG)) {
+      const dump = formatRemoteDiffFail(remoteJ, rows);
+      console.warn('[remote-precheck] max|Δ|=' + maxAbs.toFixed(3) + '° >= ' + REMOTE_SEND_MAX_DELTA_DEG + '°\n' + dump);
+      showRemoteDiffLog(dump);
+      toast('预检失败：最大关节差 ' + maxAbs.toFixed(2) + '° ≥ ' + REMOTE_SEND_MAX_DELTA_DEG + '°（见差异表）');
+      st.sendReady = false;
+      st.queuedJoints = null;
+      paintRemoteHint();
+      return;
+    }
+
+    st.sendReady = true;
+    st.queuedJoints = remoteJ.slice();
+    showRemoteDiffLog(
+      '预检通过 · max|Δ|=' + maxAbs.toFixed(3) + '° < ' + REMOTE_SEND_MAX_DELTA_DEG + '°\n'
+        + 'queued joints: [' + remoteJ.map((x) => Number(x).toFixed(4)).join(', ') + ']'
+    );
+    toast('预检通过，可远程连续下发');
+    paintRemoteHint();
+  }
+
+  function enqueueRemoteStreamWrite(armId, joints, step) {
+    const st = remoteState(armId);
+    if (!st || !st.remoteStreaming || !Array.isArray(joints) || joints.length < 6) return;
+    if (step != null && st.lastStreamedStep === step && !st.streamWritePending) return;
+    st.streamWritePending = { joints: joints.slice(0, 6), step: step };
+    if (!st.streamWriteInFlight) flushRemoteStreamWrite(armId);
+  }
+
+  async function flushRemoteStreamWrite(armId) {
+    const st = remoteState(armId);
+    if (!st || st.streamWriteInFlight) return;
+    const arm = arms.find((a) => a.id === armId) || null;
+    while (st.remoteStreaming && st.streamWritePending) {
+      if (!arm || !arm.connected || !isArmed(arm)) {
+        stopRemoteStreaming(armId);
+        st.sendReady = false;
+        toast('连接/Arm 断开，已停止远程连续下发');
+        paintRemoteHint();
+        return;
+      }
+      const job = st.streamWritePending;
+      st.streamWritePending = null;
+      st.streamWriteInFlight = true;
+      try {
+        const body = {
+          arm_id: armId,
+          joints_rad: job.joints,
+          // CS: runtime maps teleop/direct → servoj_once dense writeServoj.
+          timing: 'teleop',
+        };
+        const r = await fetch('/api/arm/command', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }).then((x) => x.json());
+        if (!st.remoteStreaming) return;
+        if (!r || !r.ok) {
+          stopRemoteStreaming(armId);
+          st.sendReady = false;
+          toast((r && r.error) || '远程连续下发失败，已停止');
+          paintRemoteHint();
+          return;
+        }
+        st.lastStreamedStep = job.step;
+      } catch (e) {
+        if (!st.remoteStreaming) return;
+        stopRemoteStreaming(armId);
+        st.sendReady = false;
+        toast('远程连续下发异常: ' + (e && e.message ? e.message : e));
+        paintRemoteHint();
+        return;
+      } finally {
+        st.streamWriteInFlight = false;
+      }
+    }
+  }
+
+  async function remoteSendActive() {
+    const arm = activeArm();
+    if (!arm) return;
+    const st = remoteState(arm.id);
+    // Toggle off
+    if (st.remoteStreaming) {
+      stopRemoteStreaming(arm.id);
+      st.sendReady = false;
+      st.queuedJoints = null;
+      toast('已停止远程连续下发（需重新预下发）');
+      paintRemoteHint();
+      return;
+    }
+    if (!arm.connected) { toast('请先连接机械臂'); return; }
+    if (!isArmed(arm)) { toast('请先 Arm 使能'); return; }
+    if (!st.on) { toast('请先拉取远程'); return; }
+    if (!st.sendReady) {
+      toast('请先预下发并通过');
+      return;
+    }
+    if (!Array.isArray(st.joints) || st.joints.length < 6) {
+      toast('尚无远程关节帧');
+      return;
+    }
+    // Start continuous direct stream (no abs-ramp).
+    st.remoteStreaming = true;
+    st.lastStreamedStep = null;
+    st.streamWritePending = null;
+    paintRemoteButtons();
+    paintRemoteHint();
+    toast('远程连续下发已开始（稠密 servoj_once）');
+    enqueueRemoteStreamWrite(arm.id, st.joints, st.step);
+  }
+
+  async function disarmActiveArm(opts) {
+    opts = opts || {};
+    const a = activeArm();
+    if (!a) return { ok: false, error: 'no arm' };
+    // Disarm also kills remote continuous-send / in-flight precheck immediately.
+    clearRemoteSendGate(a.id, opts.silent ? '' : '已 Disarm，远程连续下发已禁用');
+    showRemoteDiffLog('');
+    try {
+      await fetch('/api/arm/command', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ arm_id: a.id, cancel_abs_ramp: true }),
+      });
+    } catch (_) {}
+    const r = await fetch('/api/arm/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ arm_id: a.id, disarm: true }),
+    }).then((x) => x.json()).catch((e) => ({ ok: false, error: String(e) }));
+    // Optimistic UI: write-agent frame may lag one tick.
+    if (r && r.ok && a.write_agent) {
+      const fr = framesByAgent[a.write_agent] || { agent_id: a.write_agent, payload: {} };
+      fr.payload = Object.assign({}, fr.payload || {}, { armed: false });
+      framesByAgent[a.write_agent] = fr;
+    }
+    paintArmButtons();
+    paintRemoteButtons();
+    return r;
+  }
+
+  function stopRemote(armId, opts) {
+    opts = opts || {};
+    const st = remoteState(armId);
+    if (!st) return;
+    if (st.es) {
+      try { st.es.close(); } catch (_) {}
+      st.es = null;
+    }
+    if (st.pollTimer) {
+      clearInterval(st.pollTimer);
+      st.pollTimer = null;
+    }
+    st.on = false;
+    st.mode = '';
+    st.sendReady = false;
+    st.queuedJoints = null;
+    st.prechecking = false;
+    st.precheckToken = (st.precheckToken || 0) + 1;
+    stopRemoteStreaming(armId);
+    if (!opts.keepJoints) st.joints = null;
+    if (armId === activeId) {
+      showRemoteDiffLog('');
+      paintRemoteHint();
+      paintJoints();
+      paintRead();
+    }
+  }
+
+  function streamUrlFor(raw) {
+    let u;
+    try { u = new URL(String(raw || '').trim()); }
+    catch (_) { return null; }
+    if (!u.searchParams.has('stream')) u.searchParams.set('stream', '1');
+    if (!u.searchParams.has('hz')) u.searchParams.set('hz', '20');
+    return u.toString();
+  }
+
+  function startRemotePoll(armId, baseUrl) {
+    const st = remoteState(armId);
+    st.mode = 'poll';
+    const tick = async () => {
+      if (!st.on) return;
+      try {
+        const r = await fetch(baseUrl, { cache: 'no-store' });
+        const obj = await r.json();
+        applyRemoteFrame(armId, obj);
+      } catch (e) {
+        if (armId === activeId) {
+          const el = $('remoteHint');
+          if (el) {
+            el.textContent = '远程 poll 失败: ' + (e && e.message ? e.message : e);
+            el.className = 'hint remote-hint-err';
+          }
+        }
+      }
+    };
+    tick();
+    st.pollTimer = setInterval(tick, 50);
+  }
+
+  function startRemoteStream(armId, url) {
+    const st = remoteState(armId);
+    const sseUrl = streamUrlFor(url);
+    if (!sseUrl) {
+      toast('远程 URL 无效');
+      return;
+    }
+    stopRemote(armId, { keepJoints: true });
+    st.url = String(url || '').trim();
+    st.on = true;
+    st.mode = 'sse';
+    paintRemoteHint();
+    let es;
+    try {
+      es = new EventSource(sseUrl);
+    } catch (e) {
+      startRemotePoll(armId, st.url);
+      return;
+    }
+    st.es = es;
+    const onPayload = (ev) => {
+      try {
+        const obj = JSON.parse(ev.data);
+        applyRemoteFrame(armId, obj);
+      } catch (_) {}
+    };
+    es.addEventListener('gello', onPayload);
+    es.onmessage = onPayload;
+    es.onerror = () => {
+      // Fall back to HTTP poll if SSE blocked / dropped.
+      if (st.es) {
+        try { st.es.close(); } catch (_) {}
+        st.es = null;
+      }
+      if (st.on && !st.pollTimer) {
+        startRemotePoll(armId, st.url);
+        if (armId === activeId) toast('SSE 不可用，已改 poll');
+      }
+    };
+  }
+
+  async function remoteConnectActive() {
+    const arm = activeArm();
+    if (!arm) return;
+    const urlEl = $('remoteUrl');
+    const url = (urlEl && urlEl.value ? urlEl.value : '').trim();
+    if (!url) { toast('请输入远程 joints URL'); return; }
+    try {
+      // Validate URL shape early.
+      // eslint-disable-next-line no-new
+      new URL(url);
+    } catch (_) {
+      toast('远程 URL 无效');
+      return;
+    }
+    try { localStorage.setItem(LS_REMOTE_URL + arm.id, url); } catch (_) {}
+    const st = remoteState(arm.id);
+    st.url = url;
+    st.sendReady = false;
+    st.queuedJoints = null;
+    showRemoteDiffLog('');
+    startRemoteStream(arm.id, url);
+    // Auto disarm once after remote connect (safety); also clears remote-send gate.
+    const r = await disarmActiveArm({ silent: true });
+    toast(r.ok ? '远程已拉取 · 已自动 Disarm' : ('远程已拉取 · Disarm: ' + (r.error || '失败')));
+    paintRemoteHint();
+  }
+
+  function remoteDisconnectActive() {
+    const arm = activeArm();
+    if (!arm) return;
+    stopRemote(arm.id);
+    toast('已停止远程拉取');
+  }
+
+  function paintReadRemoteOverlay() {
+    const arm = activeArm();
+    const box = $('jointRead');
+    if (!arm || !box) return;
+    const st = remoteState(arm.id);
+    if (!st || !st.on || !Array.isArray(st.joints)) return;
+    const n = arm.num_joints || 6;
+    let html = '<p class="hint remote-hint-ok">远程 joints · step=' + (st.step != null ? st.step : '—') + '</p>';
+    for (let i = 0; i < n; i++) {
+      const rad = Number(st.joints[i] || 0);
+      const deg = rad * DEG;
+      const pct = Math.max(0, Math.min(100, 50 + (deg / 180) * 50));
+      html += '<div class="joint"><span>J' + (i + 1) + '</span><div class="bar"><i style="width:' + pct + '%"></i></div><span>' + deg.toFixed(1) + '°</span></div>';
+    }
+    box.innerHTML = html;
+  }
+
   function currentJoints() {
     const arm = activeArm();
-    if (!arm || !arm.connected) return null;
+    if (!arm) return null;
+    const rst = remoteState(arm.id);
+    if (rst && rst.on && Array.isArray(rst.joints)) return rst.joints;
+    if (!arm.connected) return null;
     const fr = framesByAgent[arm.read_agent];
     const j = fr && fr.payload && fr.payload.joints_rad;
     return Array.isArray(j) ? j : null;
@@ -1031,14 +1723,31 @@ PAGE = r"""<!DOCTYPE html>
     if (hint) {
       hint.textContent = !arm
         ? '未选臂'
-        : (on ? ('已连接 · ' + (arm.label || arm.id)) : ('未连接 · ' + (arm.label || arm.id) + ' — 点「连接」打开读写'));
+        : (on ? ('已连接 · ' + (arm.label || arm.id) + (isArmed(arm) ? ' · Armed' : ' · Disarmed')) : ('未连接 · ' + (arm.label || arm.id) + ' — 点「连接」打开读写'));
     }
-    ['btnArm', 'btnDisarm', 'btnHomeGo', 'btnHomeSet', 'btnAbsSend'].forEach((id) => {
-      const el = $(id);
-      if (el && id !== 'btnAbsSend') el.disabled = !on;
-    });
+    paintArmButtons();
     paintArmMaxDelta();
     syncJogDeltaMax();
+    // Restore per-cell remote URL from memory / localStorage when switching arms.
+    const urlEl = $('remoteUrl');
+    if (arm && urlEl && document.activeElement !== urlEl) {
+      const st = remoteState(arm.id);
+      if (!st.url) {
+        try {
+          const saved = localStorage.getItem(LS_REMOTE_URL + arm.id);
+          if (saved) st.url = saved;
+        } catch (_) {}
+      }
+      if (!st.url) st.url = 'http://127.0.0.1:7020/joints';
+    }
+    // Drop send gate if connection/arm lost.
+    if (arm) {
+      const st = remoteState(arm.id);
+      if (st && st.sendReady && (!on || !isArmed(arm))) {
+        clearRemoteSendGate(arm.id, '状态变化，需重新预下发');
+      }
+    }
+    paintRemoteHint();
   }
 
   let maxDeltaDirty = false;
@@ -2169,6 +2878,48 @@ PAGE = r"""<!DOCTYPE html>
     });
   }
 
+  /** Catalog ``gripper_rpy`` [rx,ry,rz] rad (URDF XYZ) — assembly-only mesh twist. */
+  function applyGripperAssemblyRpy(robotRoot, arm) {
+    const rpy = arm && arm.gripper_rpy;
+    if (!robotRoot || !Array.isArray(rpy) || rpy.length < 3) return;
+    const rx = Number(rpy[0]) || 0;
+    const ry = Number(rpy[1]) || 0;
+    const rz = Number(rpy[2]) || 0;
+    if (![rx, ry, rz].some((v) => Math.abs(v) > 1e-12)) return;
+    const links = robotRoot.links || {};
+    const link =
+      links.gripper_centor_link ||
+      links.gripper_center_link ||
+      links.ee_link ||
+      null;
+    if (!link) return;
+    const extra = new THREE.Euler(rx, ry, rz, 'XYZ');
+    const q = new THREE.Quaternion().setFromEuler(extra);
+    link.quaternion.multiply(q);
+    link.updateMatrix();
+  }
+
+  /** Catalog ``gripper_rpy`` [rx,ry,rz] rad (URDF XYZ) — assembly-only mesh twist. */
+  function applyGripperAssemblyRpy(robotRoot, arm) {
+    const rpy = arm && arm.gripper_rpy;
+    if (!robotRoot || !Array.isArray(rpy) || rpy.length < 3) return;
+    const rx = Number(rpy[0]) || 0;
+    const ry = Number(rpy[1]) || 0;
+    const rz = Number(rpy[2]) || 0;
+    if (![rx, ry, rz].some((v) => Math.abs(v) > 1e-12)) return;
+    const links = robotRoot.links || {};
+    const link =
+      links.gripper_centor_link ||
+      links.gripper_center_link ||
+      links.ee_link ||
+      null;
+    if (!link) return;
+    const extra = new THREE.Euler(rx, ry, rz, 'XYZ');
+    const q = new THREE.Quaternion().setFromEuler(extra);
+    link.quaternion.multiply(q);
+    link.updateMatrix();
+  }
+
   function loadModel(arm) {
     const token = ++loadToken;
     clearRobot();
@@ -2192,6 +2943,7 @@ PAGE = r"""<!DOCTYPE html>
       softMaterials(r);
       r.rotation.x = -Math.PI / 2; // Z-up → Y-up
       if (arm.mirror_y) r.scale.y = -1;
+      applyGripperAssemblyRpy(r, arm);
       robot = r;
       scene.add(robot);
       const keys = robot.joints ? Object.keys(robot.joints) : [];
@@ -2238,8 +2990,14 @@ PAGE = r"""<!DOCTYPE html>
     if (tcpPreviewHold) return;
     const arm = activeArm();
     if (!arm || !robot || !robot.joints) return;
-    const fr = framesByAgent[arm.read_agent];
-    const j = fr && fr.payload && fr.payload.joints_rad;
+    const rst = remoteState(arm.id);
+    let j = null;
+    if (rst && rst.on && Array.isArray(rst.joints)) {
+      j = rst.joints;
+    } else {
+      const fr = framesByAgent[arm.read_agent];
+      j = fr && fr.payload && fr.payload.joints_rad;
+    }
     if (!Array.isArray(j)) return;
     const names = resolveJointNames(arm);
     const applied = paintJointsFromArray(j);
@@ -2275,6 +3033,7 @@ PAGE = r"""<!DOCTYPE html>
         loadModel(a);
         renderControls();
         paintConn();
+        paintRemoteHint();
         paintRead();
         refreshArmMaxDeltaFromServer();
       };
@@ -2315,8 +3074,21 @@ PAGE = r"""<!DOCTYPE html>
     const arm = activeArm();
     const box = $('jointRead');
     if (!arm) { box.innerHTML = ''; return; }
+    const rst = remoteState(arm.id);
+    if (rst && rst.on && Array.isArray(rst.joints)) {
+      paintReadRemoteOverlay();
+      const jl = $('jointsLine');
+      if (jl) jl.textContent = 'joints (remote): ' + (fmtCsv6(rst.joints) || '—');
+      $('poseLine').textContent = 'TCP —（远程 joints 驱动画布）';
+      const fl = $('flangeLine');
+      if (fl) fl.textContent = '法兰 —';
+      paintJoints();
+      return;
+    }
     if (!arm.connected) {
       box.innerHTML = '<p class="hint">未连接 — 关节读数不可用</p>';
+      const jl = $('jointsLine');
+      if (jl) jl.textContent = 'joints —';
       $('poseLine').textContent = 'TCP —';
       const fl = $('flangeLine');
       if (fl) fl.textContent = '法兰 —';
@@ -2334,6 +3106,11 @@ PAGE = r"""<!DOCTYPE html>
       html += '<div class="joint"><span>J' + (i + 1) + '</span><div class="bar"><i style="width:' + pct + '%"></i></div><span>' + deg.toFixed(1) + '°</span></div>';
     }
     box.innerHTML = html;
+    const jl = $('jointsLine');
+    if (jl) {
+      const csv = fmtCsv6(j);
+      jl.textContent = csv ? ('joints (rad): ' + csv) : 'joints —';
+    }
     const cart = fr && fr.payload && fr.payload.cartesian_xyzrpy;
     $('poseLine').textContent = Array.isArray(cart)
       ? ('TCP xyzrpy: ' + cart.map(x => Number(x).toFixed(3)).join(', '))
@@ -2345,6 +3122,8 @@ PAGE = r"""<!DOCTYPE html>
         ? ('法兰 xyzrpy: ' + flange.map(x => Number(x).toFixed(3)).join(', '))
         : '法兰 —';
     }
+    paintArmButtons();
+    paintRemoteButtons();
     paintJoints();
   }
 
@@ -2367,6 +3146,21 @@ PAGE = r"""<!DOCTYPE html>
     $('armMaxDelta').addEventListener('change', () => { maxDeltaDirty = true; });
     $('armMaxDelta').addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter') applyArmMaxDelta();
+    });
+
+    $('btnRemoteConnect').onclick = () => remoteConnectActive();
+    $('btnRemoteDisconnect').onclick = () => remoteDisconnectActive();
+    $('btnRemotePrecheck').onclick = () => remotePrecheckActive();
+    $('btnRemoteSend').onclick = () => remoteSendActive();
+    $('remoteUrl').addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') remoteConnectActive();
+    });
+    $('remoteUrl').addEventListener('change', () => {
+      const arm = activeArm();
+      if (!arm) return;
+      const st = remoteState(arm.id);
+      st.url = String($('remoteUrl').value || '').trim();
+      try { localStorage.setItem(LS_REMOTE_URL + arm.id, st.url); } catch (_) {}
     });
 
     $('btnConnect').onclick = async () => {
@@ -2427,11 +3221,17 @@ PAGE = r"""<!DOCTYPE html>
       const a = activeArm(); if (!a) return;
       if (!a.connected) { toast('请先连接该臂'); return; }
       const r = await fetch('/api/arm/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ arm_id: a.id, arm: true }) }).then(x => x.json());
+      if (r && r.ok && a.write_agent) {
+        const fr = framesByAgent[a.write_agent] || { agent_id: a.write_agent, payload: {} };
+        fr.payload = Object.assign({}, fr.payload || {}, { armed: true });
+        framesByAgent[a.write_agent] = fr;
+      }
+      paintArmButtons();
+      paintRemoteButtons();
       toast(r.ok ? 'armed' : (r.error || 'arm failed'));
     };
     $('btnDisarm').onclick = async () => {
-      const a = activeArm(); if (!a) return;
-      const r = await fetch('/api/arm/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ arm_id: a.id, disarm: true }) }).then(x => x.json());
+      const r = await disarmActiveArm();
       toast(r.ok ? 'disarmed' : (r.error || 'disarm failed'));
     };
     if (st.arm_abs_ramp && st.arm_abs_ramp.params && !absTimingSeeded) {
@@ -2676,10 +3476,12 @@ def create_app(orch: Orchestrator) -> FastAPI:
 
     @app.post("/api/arm/ik")
     async def arm_ik(body: ArmIkBody) -> dict[str, Any]:
-        return orch.arm_ik(
+        # IK is CPU-bound (scipy LM); keep the event loop free for WS/UI.
+        return await asyncio.to_thread(
+            orch.arm_ik,
             body.arm_id,
             body.xyzrpy,
-            seed=body.seed_joints_rad,
+            body.seed_joints_rad,
             ori_weight=body.ori_weight,
             orientation_tolerance_rad=body.orientation_tolerance_rad,
             accept_residual=body.accept_residual,

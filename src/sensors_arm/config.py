@@ -88,9 +88,9 @@ class ModelCatalogEntry(BaseModel):
     product: str = "6DoF"
     num_joints: int = 6
     backend: str = "elite"  # elite | stub
-    # FK/IK package: legacy hik-sensors kinematics vs YAML-backed cs66_kinematics
-    kinematics: str = "kinematics"  # kinematics | cs66_kinematics
-    kinematics_profile: str | None = None  # e.g. elite_cs66 (cs66_kinematics only)
+    # FK/IK package: legacy hik-sensors kinematics vs YAML-backed CS66 packs
+    kinematics: str = "kinematics"  # kinematics | cs66_kinematics | cs66_kin_g26562
+    kinematics_profile: str | None = None  # e.g. elite_cs66 (YAML packs only)
     urdf: str | None = "/assets/models/ec616/ec616.urdf"
     joint_names: list[str] = Field(
         default_factory=lambda: ["Joint1", "Joint2", "Joint3", "Joint4", "Joint5", "Joint6"]
@@ -100,6 +100,9 @@ class ModelCatalogEntry(BaseModel):
     )
     joint_signs: list[float] = Field(default_factory=lambda: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
     mirror_y: bool = True
+    # Extra EOAT assembly RPY (rad, URDF XYZ) applied in viz after URDF load.
+    # e.g. Cell C gripper flipped 180° about tool Z → [0, 0, π]
+    gripper_rpy: list[float] | None = None
     notes: str | None = None
 
 
@@ -163,6 +166,24 @@ BUILTIN_MODELS: dict[str, ModelCatalogEntry] = {
         notes=(
             "URDF joints from teach MDH; meshes CS66urdf.rar; SDK=elite_cs_sdk via arm_cs_write. "
             "FK/IK=sensors.cs66_kinematics/elite_cs66 (not sensors.kinematics)"
+        ),
+    ),
+    "elite_cs66_g26562": ModelCatalogEntry(
+        brand="Elite",
+        product="CS66",
+        num_joints=6,
+        backend="elite",
+        kinematics="cs66_kin_g26562",
+        kinematics_profile="elite_cs66",
+        urdf="/assets/models/cs66/cs66.urdf?v=cs66-efg-c65-3",
+        joint_names=["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"],
+        joint_offset_rad=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        joint_signs=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        mirror_y=False,
+        gripper_rpy=[0.0, 0.0, 3.141592653589793],
+        notes=(
+            "Cell C copy of CS66 visuals/SDK path; FK/IK=sensors.cs66_kin_g26562/elite_cs66 "
+            "(G26562 teach pairs 2026-10-27). Viz EOAT: gripper +180° about tool Z."
         ),
     ),
     "stub_6dof": ModelCatalogEntry(

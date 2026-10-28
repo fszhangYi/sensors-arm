@@ -45,6 +45,25 @@ models:
       URDF joint origins rebuilt from teach MDH (elite_cs66); meshes from CS66urdf.rar.
       FK/IK = sensors.cs66_kinematics / elite_cs66 (2026-10-15 cross-check ≈0.005 mm FK).
 
+  # Cell C — same CS66 URDF/SDK as Cell B; FK/IK from cs66_kin_g26562 (unit G26562).
+  elite_cs66_g26562:
+    brand: Elite
+    product: CS66
+    num_joints: 6
+    backend: elite
+    kinematics: cs66_kin_g26562
+    kinematics_profile: elite_cs66
+    urdf: /assets/models/cs66/cs66.urdf?v=cs66-efg-c65-3
+    joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
+    joint_offset_rad: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    joint_signs: [1, 1, 1, 1, 1, 1]
+    mirror_y: false
+    # Assembly-only: EFG-C65 mesh +180° about tool Z (does not change tcp_xyz / FK).
+    gripper_rpy: [0.0, 0.0, 3.141592653589793]
+    notes: >-
+      Visual/control clone of elite_cs66; FK/IK = sensors.cs66_kin_g26562 / elite_cs66
+      (示教器信息 2026-10-27; MDH page pending for sub-mm FK). Gripper viz roll π.
+
   # Placeholder for a second brand — joint bars only until a URDF is added.
   stub_6dof:
     brand: Stub

@@ -16,10 +16,24 @@ from sensors_arm.agents.arm_write_agent import ArmWriteAgent
 from sensors_arm.agents.base import BaseAgent
 
 
-def joints6_from_ring(agent: BaseAgent, *, prefer_key: str = "joints_rad") -> list[float] | None:
+def joints6_from_ring(
+    agent: BaseAgent,
+    *,
+    prefer_key: str = "joints_rad",
+    require_measured: bool = True,
+) -> list[float] | None:
     fr = agent.ring.latest.get()
     if fr is None:
         return None
+    # Live station: refuse synth/command-only. Dry-run synth poses remain OK.
+    if require_measured and not fr.payload.get("dry_run"):
+        if fr.payload.get("synth"):
+            return None
+        if fr.payload.get("measured") is False:
+            return None
+        source = str(fr.payload.get("joints_source") or "")
+        if source in ("synth", "command", "none"):
+            return None
     raw = fr.payload.get(prefer_key)
     if not isinstance(raw, (list, tuple)) or len(raw) < 6:
         raw = fr.payload.get("feedback_joints_rad") or fr.payload.get("joints_rad")
@@ -197,6 +211,8 @@ class AbsRampController:
             "jerk_seg_frac": 0.10,
             "accel_seg_frac": 0.15,
             "ramp_hz": 20.0,
+            # Elite CS abs-ramp uses servoj_once; prefer denser ticks when CS.
+            "cs_ramp_hz": 50.0,
         }
         if default_params:
             self._defaults.update(default_params)
@@ -333,6 +349,12 @@ class AbsRampController:
             )
 
         hz = float(self._defaults.get("ramp_hz") or 20.0)
+        # CS dense servoj: higher tick rate → smaller steps → smoother motion.
+        kind_v = getattr(getattr(writer.sensor, "kind", None), "value", None)
+        kind_s = str(kind_v if kind_v is not None else getattr(writer.sensor, "kind", "") or "")
+        cs_dense = kind_s == "arm_cs_write"
+        if cs_dense:
+            hz = max(hz, float(self._defaults.get("cs_ramp_hz") or 50.0))
         hz = max(0.1, hz)
         n = max(1, int(round(dur * hz)))
         path = interp_path(
@@ -380,7 +402,10 @@ class AbsRampController:
             self._writer_id = writer.agent_id
             self._last_ok = None
             self._last_error = None
-            self._message = f"关节斜坡开始：{dur:g}s @ {hz:g}Hz × {n} 点 ({mode}, {profile})"
+            dens = " · CS dense servoj" if cs_dense else ""
+            self._message = (
+                f"关节斜坡开始：{dur:g}s @ {hz:g}Hz × {n} 点 ({mode}, {profile}){dens}"
+            )
             self._write_count = 0
             self._last_t_wall = time.time()
             self._target = list(q_star)
@@ -401,6 +426,7 @@ class AbsRampController:
                 profile,
                 jerk_frac,
                 accel_frac,
+                cs_dense,
             ),
             daemon=True,
         )
@@ -429,6 +455,7 @@ class AbsRampController:
         profile: str,
         jerk_seg_frac: float,
         accel_seg_frac: float,
+        cs_dense: bool = False,
     ) -> None:
         period = 1.0 / max(0.1, float(hz))
         path = interp_path(
@@ -444,12 +471,28 @@ class AbsRampController:
         completed = False
         try:
             next_t = time.perf_counter()
+            # Guard max_delta against the previous *command* point, not lagged RTSI.
+            # Using live measured joints here made CS ramps abort after a few ticks
+            # (|path − RTSI| > max_delta while the arm was still catching up).
+            prev_cmd = list(qa0)
             for k, qk in enumerate(path, start=1):
                 if self._stop.is_set() or (self._process_stop and self._process_stop()):
                     final_message = "绝对下发已取消"
                     break
-                ref = joints6_from_ring(reader) or (path[k - 2] if k >= 2 else qa0)
-                result = writer.command(joints_rad=list(qk), reference_joints_rad=list(ref))
+                if cs_dense:
+                    result = writer.command(
+                        joints_rad=list(qk),
+                        reference_joints_rad=list(prev_cmd),
+                        servoj_once=True,
+                        relative_to_last=True,
+                        idle_after=False,
+                    )
+                else:
+                    ref = joints6_from_ring(reader) or prev_cmd
+                    result = writer.command(
+                        joints_rad=list(qk),
+                        reference_joints_rad=list(ref),
+                    )
                 with self._lock:
                     self._index = k
                     self._write_count += 1
@@ -463,15 +506,28 @@ class AbsRampController:
                 if not result.get("ok"):
                     final_error = str(result.get("error") or "ramp write failed")
                     break
+                prev_cmd = list(qk)
                 next_t += period
                 delay = next_t - time.perf_counter()
                 if delay > 0:
                     self._stop.wait(delay)
                 else:
+                    # Behind schedule: keep going; do not drop remaining points.
                     next_t = time.perf_counter()
             else:
                 completed = True
                 final_message = f"绝对下发完成：{n} 点已写入（关节空间/{profile}）"
+            # Hold reverse socket open after dense CS ramp (no per-point writeIdle).
+            if cs_dense and (completed or final_error is None):
+                try:
+                    writer.command(
+                        joints_rad=list(prev_cmd),
+                        reference_joints_rad=list(prev_cmd),
+                        servoj_once=True,
+                        idle_after=True,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
         except Exception as e:  # noqa: BLE001
             final_error = f"abs ramp exception: {e}"
 

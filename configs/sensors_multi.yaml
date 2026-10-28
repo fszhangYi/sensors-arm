@@ -1,8 +1,11 @@
-# hik-sensors devices — Elite EC616 (A, elirobots) + Elite CS66 (B, elite_cs_sdk)
+# hik-sensors devices — EC616 (A) + CS66 (B) + CS66 G26562 (C); CS uses elite_cs_sdk
+#
+# CS live control requires RTSI joint feedback (configs/rtsi/*). Without it,
+# Arm/jog is refused — do not rely on YAML home synth as "live" joints.
 
 version: 1
 site: arm-lab-multi
-dry_run: true
+dry_run: false
 
 defaults:
   # EC series — elirobots / elite.EC
@@ -23,14 +26,35 @@ defaults:
     num_joints: 6
     primary_port: 30001
     robot_tcp_port: 30001
-    max_delta_deg: 15.0
+    max_delta_deg: 2.0
     enforce_soft_limits: true
     headless_mode: true
-    servoj_timeout_ms: 100
+    require_rtsi: true
+    # Sparse UI jog: script exits if next reverse cmd misses timeout_ms
+    servoj_timeout_ms: 2000
+    idle_timeout_ms: 30000
+    keepalive_s: 2.0
+    # rad/s along each joint while streaming; keep << 30 (script JOINT_IGNORE_SPEED)
+    # and below teach-pendant speed slider / reduced mode.
+    # ~29°/s peak; raise only after teach speed slider is high and no popup
+    stream_max_rad_s: 0.5
+    # Prefer last_cmd over lagged RTSI when |Δ| under this (rad) — smoother UI jog
+    cmd_continuity_rad: 0.10
+    # ExternalControl servoj smoothing (dense teleop / servoj_once)
+    servoj_time: 0.008
+    # servoj lookahead (s); tuned 0.1→0.4→0.25 for teleop feel
+    servoj_lookahead_time: 0.25
+    servoj_gain: 300
+    rtsi_output_recipe: configs/rtsi/output_recipe.txt
+    rtsi_input_recipe: configs/rtsi/input_recipe.txt
+    rtsi_frequency: 125.0
   arm_cs_read:
     num_joints: 6
     primary_port: 30001
     robot_tcp_port: 30001
+    rtsi_output_recipe: configs/rtsi/output_recipe.txt
+    rtsi_input_recipe: configs/rtsi/input_recipe.txt
+    rtsi_frequency: 125.0
 
 devices:
   - id: arm-a
@@ -43,6 +67,8 @@ devices:
       max_delta_deg: 15.0
 
   # Cell B — Elite CS66 / ES66 (CS SDK; distinct from EC arm_write)
+  # Note: sensors-arm maps read+write agents to this same sensor_id; RTSI
+  # provides measured joints for both rings. Optional: split to arm_cs_read.
   - id: arm-b
     kind: arm_cs_write
     name: "Elite CS66 · B"
@@ -50,8 +76,41 @@ devices:
     params:
       robot_ip: "10.111.34.201"
       num_joints: 6
-      max_delta_deg: 15.0
+      max_delta_deg: 2.0
       primary_port: 30001
       headless_mode: true
-      # Live feedback (optional): path to RTSI output recipe file
-      # rtsi_output_recipe: /path/to/rtsi_output.txt
+      require_rtsi: true
+      stream_max_rad_s: 1.0
+      # Controllerside servoj smoothing (teleop / dense writeServoj):
+      servoj_time: 0.008
+      servoj_lookahead_time: 0.25
+      servoj_gain: 300
+      kinematics: cs66_kinematics
+      kinematics_profile: elite_cs66
+      # If PC has multiple NICs on 10.111.x, set the address the robot can reach:
+      # local_ip: "10.111.34.xxx"
+      rtsi_output_recipe: configs/rtsi/output_recipe.txt
+      rtsi_input_recipe: configs/rtsi/input_recipe.txt
+
+  # Cell C — Elite CS66 unit G26562 (same SDK path as B; FK/IK via cs66_kin_g26562)
+  - id: arm-c
+    kind: arm_cs_write
+    name: "Elite CS66 · C (G26562)"
+    endpoint: "192.168.1.200"
+    params:
+      robot_ip: "192.168.1.200"
+      num_joints: 6
+      max_delta_deg: 2.0
+      primary_port: 30001
+      headless_mode: true
+      require_rtsi: true
+      stream_max_rad_s: 1.0
+      # Teleop: dense servoj_once + these script params (see docs/cs66-remote-teleop-smooth.md)
+      servoj_time: 0.008
+      servoj_lookahead_time: 0.25
+      servoj_gain: 300
+      kinematics: cs66_kin_g26562
+      kinematics_profile: elite_cs66
+      # local_ip: "192.168.1.xxx"
+      rtsi_output_recipe: configs/rtsi/output_recipe.txt
+      rtsi_input_recipe: configs/rtsi/input_recipe.txt

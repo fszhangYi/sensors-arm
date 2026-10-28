@@ -104,10 +104,21 @@ class Orchestrator:
         pkg = getattr(model, "kinematics", None) or "kinematics"
         prof = getattr(model, "kinematics_profile", None)
         supported: bool | None = None
-        if str(pkg) in ("cs66_kinematics", "cs66", "sensors.cs66_kinematics") and prof:
+        pkg_s = str(pkg)
+        # YAML-backed CS66 packs (Cell B / Cell C)
+        _cs66_mod = {
+            "cs66_kinematics": "sensors.cs66_kinematics",
+            "cs66": "sensors.cs66_kinematics",
+            "sensors.cs66_kinematics": "sensors.cs66_kinematics",
+            "cs66_kin_g26562": "sensors.cs66_kin_g26562",
+            "cs66_g26562": "sensors.cs66_kin_g26562",
+            "sensors.cs66_kin_g26562": "sensors.cs66_kin_g26562",
+        }.get(pkg_s)
+        if _cs66_mod and prof:
             try:
-                from sensors.cs66_kinematics import get_profile
+                import importlib
 
+                get_profile = importlib.import_module(_cs66_mod).get_profile
                 supported = bool(get_profile(str(prof)).supported)
             except Exception:  # noqa: BLE001
                 supported = False
@@ -119,7 +130,7 @@ class Orchestrator:
         }
 
     def _bind_agent_kinematics(self) -> None:
-        """Attach per-arm FK/IK backend (CS66 → cs66_kinematics)."""
+        """Attach per-arm FK/IK backend (CS66 YAML packs / legacy)."""
         for arm in self.cfg.arms:
             kin = self._kin_for_arm(arm)
             bind = {
@@ -191,6 +202,7 @@ class Orchestrator:
                     "joint_offset_rad": model.joint_offset_rad,
                     "joint_signs": model.joint_signs,
                     "mirror_y": model.mirror_y,
+                    "gripper_rpy": list(model.gripper_rpy) if model.gripper_rpy else None,
                     "backend": model.backend,
                     "kinematics": kin["kinematics"],
                     "kinematics_profile": kin.get("kinematics_profile"),
@@ -424,10 +436,14 @@ class Orchestrator:
                 if not backends:
                     backends = [("kinematics", None)]
                 warm_kinematics(backends)
+                print(
+                    f"[sensors-arm] FK/IK warm done ({len(backends)} backend(s))",
+                    flush=True,
+                )
             except Exception as e:  # noqa: BLE001
-                print(f"[sensors-arm] FK warm skipped: {e}", flush=True)
+                print(f"[sensors-arm] FK/IK warm skipped: {e}", flush=True)
 
-        threading.Thread(target=_warm_fk, name="warm-fk", daemon=True).start()
+        threading.Thread(target=_warm_fk, name="warm-fk-ik", daemon=True).start()
 
     def stop(self, *, for_shutdown: bool = False) -> None:
         self._stop.set()
@@ -557,7 +573,14 @@ class Orchestrator:
                 parts.append(f"{arm.id}{deg or '…'}")
             print("[sensors-arm] " + " | ".join(parts), flush=True)
 
-    def latest_joints(self, arm_id: str) -> list[float] | None:
+    def latest_joints(
+        self, arm_id: str, *, require_measured: bool | None = None
+    ) -> list[float] | None:
+        """Return latest reader joints.
+
+        When ``require_measured`` is True (default on live / non-dry_run), reject
+        synth / command-only poses so Arm/jog cannot seed from YAML home.
+        """
         arm = self._arm_by_id(arm_id)
         reader = self.agents.get(arm.read_agent)
         if not isinstance(reader, ArmAgent):
@@ -565,6 +588,22 @@ class Orchestrator:
         fr = reader.ring.latest.get()
         if not fr or not isinstance(fr.payload, dict):
             return None
+        need_measured = (
+            bool(require_measured)
+            if require_measured is not None
+            else (not bool(getattr(self.manager.ctx, "dry_run", False)))
+        )
+        if need_measured:
+            if fr.payload.get("synth"):
+                return None
+            if fr.payload.get("measured") is False:
+                return None
+            source = str(fr.payload.get("joints_source") or "")
+            if source in ("synth", "command", "none"):
+                return None
+            # source ""/"unknown": allow only when explicitly measured (EC monitor).
+            if source in ("", "unknown") and not fr.payload.get("measured"):
+                return None
         j = fr.payload.get("joints_rad")
         if not isinstance(j, list):
             return None
@@ -622,10 +661,15 @@ class Orchestrator:
             }
 
         if arm:
-            if self.latest_joints(arm_id) is None:
+            live = self.latest_joints(arm_id, require_measured=True)
+            if live is None:
                 return {
                     "ok": False,
-                    "error": "no live arm read joints yet; wait for Read before Arm",
+                    "error": (
+                        "no measured arm joints yet — refuse Arm. "
+                        "For CS66: ensure RTSI (configs/rtsi/*) is up; "
+                        "YAML home synth is disabled on live."
+                    ),
                 }
             return writer.command(arm=True)
 
@@ -635,8 +679,10 @@ class Orchestrator:
 
         if joints_rad is not None:
             mode = str(timing or "scale_by_d").strip().lower()
-            # TCP-drag: one-shot write, no jerk / abs-ramp interpolation.
-            if mode in ("direct", "immediate", "step"):
+            # TCP-drag / remote teleop: one setpoint per call, no abs-ramp.
+            # CS66: dense writeServoj (servoj_once) so controller servoj_* smooths;
+            # never per-point writeIdle (that path is _servoj_stream — jerky for teleop).
+            if mode in ("direct", "immediate", "step", "teleop"):
                 if self._abs_ramp.enabled:
                     self._abs_ramp.cancel(message="因直接下发取消斜坡")
                 armed = bool(getattr(writer.sensor, "armed", False))
@@ -655,18 +701,43 @@ class Orchestrator:
                     return {"ok": False, "error": "joints_rad must be 6 floats"}
                 if len(q_star) != 6 or any(not math.isfinite(x) for x in q_star):
                     return {"ok": False, "error": "joints_rad must be exactly 6 finite values"}
-                base = self.latest_joints(arm_id)
+                base = self.latest_joints(arm_id, require_measured=True)
                 if base is None:
                     return {
                         "ok": False,
-                        "error": "no live arm read joints; refuse direct write without current pose",
+                        "error": (
+                            "no measured joints; refuse direct write "
+                            "(CS66 needs RTSI)"
+                        ),
                     }
-                wr = writer.command(
-                    joints_rad=q_star,
-                    reference_joints_rad=list(base),
+                kind_v = getattr(getattr(writer.sensor, "kind", None), "value", None)
+                kind_s = str(
+                    kind_v
+                    if kind_v is not None
+                    else getattr(writer.sensor, "kind", "") or ""
                 )
+                cs_dense = kind_s == "arm_cs_write"
+                if cs_dense:
+                    # Guard vs last command (continuity); single writeServoj per frame.
+                    wr = writer.command(
+                        joints_rad=q_star,
+                        servoj_once=True,
+                        relative_to_last=True,
+                        idle_after=False,
+                    )
+                else:
+                    # EC TT: one TT_add_joint; reference = measured for max_delta.
+                    wr = writer.command(
+                        joints_rad=q_star,
+                        reference_joints_rad=list(base),
+                    )
                 out = dict(wr) if isinstance(wr, dict) else {"ok": bool(wr)}
-                out["timing"] = "direct"
+                out["timing"] = mode if mode != "teleop" else "teleop"
+                if cs_dense:
+                    out["servoj_once"] = True
+                    out["write_path"] = "cs_servoj_once"
+                else:
+                    out["write_path"] = "ec_tt"
                 return out
             # New abs-send replaces any in-flight ramp (same as DCS).
             return self._abs_ramp.start(
@@ -690,14 +761,27 @@ class Orchestrator:
             }
 
         if jog_joint is not None:
-            cur = self.latest_joints(arm_id)
+            # CS: pass jog to driver so it can stream from continuous last_cmd
+            # (pre-building from lagged RTSI caused rewind shake).
+            # EC: still expand to absolute joints from measured read.
+            cur = self.latest_joints(arm_id, require_measured=True)
             if cur is None:
-                return {"ok": False, "error": "no live joints for jog"}
+                return {
+                    "ok": False,
+                    "error": (
+                        "no measured joints for jog "
+                        "(CS66 needs RTSI actual_joint_positions)"
+                    ),
+                }
             d = float(delta_rad) if delta_rad is not None else math.radians(float(delta_deg or 0))
-            tgt = list(cur)
             ji = int(jog_joint)
-            if ji < 0 or ji >= len(tgt):
+            if ji < 0 or ji >= len(cur):
                 return {"ok": False, "error": "jog_joint out of range"}
+            kind_v = getattr(getattr(writer.sensor, "kind", None), "value", None)
+            kind_s = str(kind_v if kind_v is not None else getattr(writer.sensor, "kind", "") or "")
+            if kind_s == "arm_cs_write":
+                return writer.command(jog_joint=ji, delta_rad=d)
+            tgt = list(cur)
             tgt[ji] = float(tgt[ji]) + d
             return writer.command(joints_rad=tgt, reference_joints_rad=cur)
 
@@ -718,7 +802,9 @@ class Orchestrator:
         arm = self._arm_by_id(arm_id)
         n = int(arm.num_joints or resolve_model(self.cfg, arm).num_joints)
         if joints is None:
-            joints = self.latest_joints(arm_id)
+            joints = self.latest_joints(arm_id, require_measured=True)
+            if joints is None and bool(getattr(self.manager.ctx, "dry_run", False)):
+                joints = self.latest_joints(arm_id, require_measured=False)
         parsed, err = parse_home_joints(joints, n=n)
         if parsed is None:
             return {"ok": False, "error": err}
@@ -772,22 +858,28 @@ class Orchestrator:
         arm = self._arm_by_id(arm_id)
         kin = self._kin_for_arm(arm)
         if seed is None:
-            seed = self.latest_joints(arm_id)
+            seed = self.latest_joints(arm_id, require_measured=True)
+            if seed is None:
+                seed = self.latest_joints(arm_id, require_measured=False)
         if seed is None:
             seed = [0.0] * int(arm.num_joints or 6)
         try:
             tcp = kin.get("tcp_xyz")
             if tcp is not None:
                 set_tcp_xyz(tcp)
+            # TCP-drag path: interactive LM (no soft-limit TRF). Soft TRF +
+            # 2-point jac was the main reason amber-ball IK felt slow.
             ik_kwargs: dict[str, Any] = {
                 "q_seed_rad": seed,
                 "tcp_xyz": tcp,
                 "kinematics": kin["kinematics"],
                 "kinematics_profile": kin.get("kinematics_profile"),
-                # Drag-friendly multi-seed; tolerances match arm_pose defaults.
-                # Cell B elite_cs66 is teach-MDH calibrated (not provisional URDF DH).
-                "max_nfev": 800,
-                "multi_seed": True,
+                "interactive": True,
+                "max_nfev": 80,
+                "multi_seed": False,
+                "soft_limit_retry": False,
+                "enforce_teach_soft_limits": False,
+                "solver_tol": 1e-6,
             }
             if ori_weight is not None:
                 ik_kwargs["ori_weight"] = float(ori_weight)
@@ -796,6 +888,21 @@ class Orchestrator:
             if accept_residual is not None:
                 ik_kwargs["accept_residual"] = float(accept_residual)
             result = xyzrpy_to_joints_rad(xyzrpy, **ik_kwargs)
+            if (
+                isinstance(result, dict)
+                and (
+                    not result.get("ok", True)
+                    or result.get("joints_rad") is None
+                )
+            ):
+                # Limited escalate: still LM, slightly more budget + ±0.25 rad seeds.
+                slow = dict(ik_kwargs)
+                slow["max_nfev"] = 160
+                slow["multi_seed"] = True
+                result = xyzrpy_to_joints_rad(xyzrpy, **slow)
+                if isinstance(result, dict):
+                    result = dict(result)
+                    result["ik_escalated"] = True
             if not isinstance(result, dict):
                 return {"ok": False, "error": "unexpected IK result"}
             if not result.get("ok", True) and result.get("joints_rad") is None:
@@ -803,12 +910,17 @@ class Orchestrator:
             joints = result.get("joints_rad")
             out = {"ok": True, **result}
             if isinstance(joints, list):
-                out["cartesian"] = cartesian_payload(
+                # Reuse achieved TCP from IK when present; still need flange for blue ball.
+                cart = cartesian_payload(
                     joints,
                     tcp_xyz=tcp,
                     kinematics=kin["kinematics"],
                     kinematics_profile=kin.get("kinematics_profile"),
                 )
+                achieved = result.get("achieved_xyzrpy")
+                if isinstance(achieved, list) and len(achieved) >= 6:
+                    cart["cartesian_xyzrpy"] = list(achieved)
+                out["cartesian"] = cart
             return out
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": str(e)}

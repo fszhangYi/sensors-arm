@@ -1,4 +1,4 @@
-# sensors-arm — multi-arm dry-run demo (Elite EC616 + Elite CS66)
+# sensors-arm — multi-arm dry-run demo (EC616 + CS66 Cell B + CS66 Cell C/G26562)
 #
 #   sensors-arm run -c configs/default.yaml
 #   python -m sensors_arm.desktop_main -c configs/default.yaml --ui
@@ -6,7 +6,7 @@ version: 1
 site: arm-lab
 sensors_config: ./sensors_multi.yaml
 models_catalog: ./models_catalog.yaml
-dry_run: true
+dry_run: false
 tcp_xyz: [0.0, 0.0, 0.18]
 
 runtime:
@@ -49,6 +49,17 @@ arms:
     # Flange-only check vs teach: set [0,0,0] (amber==blue ball).
     tcp_xyz: [0.0, 0.0, 0.1505]
 
+  - id: arm-c
+    label: "Cell C · CS66 G26562"
+    model: elite_cs66_g26562
+    brand: Elite
+    product: CS66
+    read_agent: arm-c-read
+    write_agent: arm-c-write
+    # Home joints (rad); FK/IK = cs66_kin_g26562.
+    home_joints_rad: [2.8695, -1.9539, 1.8019, -1.6618, 4.7475, -0.0275]
+    tcp_xyz: [0.0, 0.0, 0.1505]
+
 # agents synthesized from arms: if omitted; explicit list keeps DCS-compatible shape
 agents:
   - id: arm-a-read
@@ -69,5 +80,15 @@ agents:
   - id: arm-b-write
     type: arm_write
     sensor_id: arm-b
+    hz: 5
+    buffer_frames: 8
+  - id: arm-c-read
+    type: arm
+    sensor_id: arm-c
+    hz: 50
+    buffer_frames: 64
+  - id: arm-c-write
+    type: arm_write
+    sensor_id: arm-c
     hz: 5
     buffer_frames: 8

@@ -80,17 +80,22 @@ class ArmAgent(BaseAgent):
         self._seq += 1
 
         joints = sample.get("joints_rad")
-        dry = bool(sample.get("dry_run")) or joints is None
-        # Only synth when the sensor has no joints yet — if sharing arm_write in
-        # dry_run, keep the driver's reported pose so jog stays relative to it.
-        if dry and self.dry_run_synth and joints is None:
+        sensor_dry = bool(getattr(getattr(self.sensor, "ctx", None), "dry_run", False))
+        sample_dry = bool(sample.get("dry_run")) if sample.get("dry_run") is not None else sensor_dry
+        # CRITICAL: never synth home as "live" when the station is not dry_run.
+        # Missing joints on live CS (no RTSI) must stay None so Arm/jog refuse.
+        synth = False
+        if sensor_dry and self.dry_run_synth and joints is None:
             joints = self._synth_joints(t_wall)
+            synth = True
             sample = {
                 **sample,
                 "joints_rad": joints,
                 "joints_deg": [math.degrees(x) for x in joints],
                 "dry_run": True,
                 "synth": True,
+                "joints_source": "synth",
+                "measured": False,
             }
 
         # Normalize to plain list[float] so ring consumers (IK seed) never see ndarray/tuple quirks.
@@ -102,16 +107,32 @@ class ArmAgent(BaseAgent):
             except (TypeError, ValueError):
                 joints = None
 
+        source = str(sample.get("joints_source") or ("synth" if synth else "unknown"))
+        if "measured" in sample:
+            measured = bool(sample.get("measured"))
+        elif synth or source in ("synth", "command", "none"):
+            measured = False
+        elif source == "rtsi":
+            measured = joints is not None
+        else:
+            # EC monitor / legacy reads: joints present on live ⇒ measured.
+            measured = joints is not None and not sensor_dry
+        if not sensor_dry and source == "command":
+            measured = False
+
         payload: dict[str, Any] = {
             "joints_rad": joints,
             "joints_deg": sample.get("joints_deg"),
+            "command_joints_rad": sample.get("command_joints_rad"),
+            "joints_source": source,
+            "measured": measured,
             "num_joints": sample.get("num_joints") or self._n_joints,
             "robot_ip": sample.get("robot_ip") or getattr(self.sensor, "robot_ip", None),
             "endpoint": sample.get("endpoint"),
             "backend": sample.get("backend") or "elite_ec",
             "mode": sample.get("mode") or "read_only",
-            "dry_run": dry,
-            "synth": bool(sample.get("synth")),
+            "dry_run": bool(sample_dry or synth),
+            "synth": bool(synth or sample.get("synth")),
         }
         # Skip FK until warmed (avoids dual-thread scipy import deadlock).
         try:
