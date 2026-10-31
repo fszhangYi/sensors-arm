@@ -1,7 +1,7 @@
 # CS66 远程连续下发（遥操作）抖动问题 — 调研与处理记录
 
-日期：2026-10-28  
-状态：**阶段 A 已落地；lookahead=0.25 仍不够丝滑；阶段 B / 其它杠杆待选**  
+日期：2026-10-28（阶段 B 续：2026-10-30）  
+状态：**阶段 A + 阶段 B.1（后端 100 Hz latest-wins 写线程）已落地；P0 keepalive idle grace 在 sensors；DCS 写频/servoj_time 已对齐**  
 范围：`sensors-arm` UI「远程连续下发」→ CS66（`arm_cs_write` / `writeServoj`）  
 相关：
 
@@ -110,11 +110,13 @@ ExternalControl 常驻
 
 
 
-### 阶段 B — 丝滑增强（**未做**）
+### 阶段 B — 丝滑增强
 
-1. 后端定点频写线程（50–125 Hz）latest-wins，与浏览器 RTT 解耦  
-2. 相对 `_last_cmd` 速率裁剪，减少 `max_delta` 硬拒断流  
-3.（可选）WS 上行专用 teleop 通道  
+1. **B.1 已落地（2026-10-30）**：后端定点频写线程（默认 **100 Hz**）latest-wins；浏览器只推设定点（`/api/arm/teleop-stream` + `/setpoint`），与 HTTP 写臂 RTT 解耦；`servoj_time: 0.01`  
+2. 相对 `_last_cmd` 速率裁剪，减少 `max_delta` 硬拒断流（**未做**）  
+3.（可选）WS 上行专用 teleop 通道（**未做**）  
+
+配套 P0（`sensors`）：稠密 `servoj_once` 后 `keepalive_idle_grace_s`（默认 0.4 s）内跳过 keepalive `writeIdle`。  
 
 ### 阶段 C — 非目标
 
@@ -131,12 +133,19 @@ ExternalControl 常驻
 ### 当前链路（卡顿来源）
 
 ```text
+【阶段 A 后 / B.1 前】
 Gello /joints (≈20–50 Hz, 有噪声)
   → 浏览器 SSE/poll
   → 每帧 POST /api/arm/command  (串行等 RTT；in-flight 时 latest-wins)
   → runtime teleop → writeServoj(servoj_once)
   → 控制器 servoj(t=0.008, lookahead=0.25, gain=300)
 并行：Armed keepalive 仍可能偶尔抢到 _io_lock 插入 writeIdle
+
+【B.1 后】
+Gello /joints → 浏览器只 POST /api/arm/teleop-stream/setpoint（latest-wins）
+  → 后端 100 Hz 写线程 → writeServoj(servoj_once)
+  → 控制器 servoj(t=0.01, lookahead=0.25, gain=300)
+  → keepalive：最近 servoj 后 grace 内跳过 writeIdle
 ```
 
 UR 明确警告：**设定点更新频率低或噪声大时，高 gain / 短 lookahead 会振**；  
@@ -183,6 +192,8 @@ EC 丝滑靠 TT **控制器侧缓冲吃流**；CS 没有对等池，**PC 侧设�
 | 2026-10-28 | 实机反馈：比 `_servoj_stream` **好太多**，仍略卡；回忆 EC lookahead ≈ **400 ms** | 曾设 `servoj_lookahead_time` **0.1 → 0.4** |
 | 2026-10-28 | 用户指定 lookahead | 改为 **`0.25`**（defaults + arm-b/c） |
 | 2026-10-28 | 实机：0.25 好一些仍不达标；调研其它杠杆 | 写入 §6.1；主因指向 **设定点节奏/架构**，非再拧 lookahead |
+| 2026-10-30 | **阶段 B.1 + P0**：arm 后端 100 Hz 写线程；sensors keepalive idle grace；DCS `teleop_hz=100` / `servoj_time=0.01` | 代码已合入三仓；待实机验收 |
+| 2026-10-31 | **DCS gello→arm 摇操对齐 B.1**：取消 `teleop_step_max_rad`；设定点 latest-wins + 独立定频写线程（见 `sensors-dcs/docs/gello-arm-teleop.md` 变更记录） | 待实机验收 |
 
 ### 结果摘要
 
@@ -192,9 +203,9 @@ EC 丝滑靠 TT **控制器侧缓冲吃流**；CS 没有对等池，**PC 侧设�
 | 根因（阶段 A） | 已确认：曾误走 `_servoj_stream` |
 | 阶段 A（稠密 servoj_once + servoj_* 参数） | **已实现** |
 | Lookahead | **0.25 s**；再调 **非主路径** |
-| 阶段 B（后端写线程） | 未做 → **下一优先** |
-| Keepalive 与稠密 servoj 争用 | **已标为 P0 嫌疑**（§6.1） |
-| 实机丝滑验收 | 阶段 A+0.25 改善但 **未达标** |
+| 阶段 B.1（后端写线程） | **已实现**（100 Hz latest-wins） |
+| Keepalive 与稠密 servoj 争用 | **已做 P0 grace**（sensors） |
+| 实机丝滑验收 | 阶段 B 后 **待复测** |
 
 ---
 
@@ -202,11 +213,11 @@ EC 丝滑靠 TT **控制器侧缓冲吃流**；CS 没有对等池，**PC 侧设�
 
 | 文件 | 角色 |
 |------|------|
-| `sensors-arm/src/sensors_arm/viz.py` | 远程连续下发 UI；`timing: teleop` |
-| `sensors-arm/src/sensors_arm/runtime.py` | direct/teleop → CS `servoj_once` |
+| `sensors-arm/src/sensors_arm/viz.py` | 远程连续下发 UI；启停 `/api/arm/teleop-stream` + 推 setpoint |
+| `sensors-arm/src/sensors_arm/runtime.py` | direct/teleop → CS `servoj_once`；**B.1 定点频写线程** |
 | `sensors-arm/src/sensors_arm/agents/arm_write_agent.py` | `servoj_once` 透传 |
-| `sensors-arm/configs/sensors_multi.yaml` | `servoj_time` / `lookahead` / `gain` |
-| `sensors/src/sensors/drivers/arm/cs_write.py` | `_servoj_once` / `_servoj_stream` |
+| `sensors-arm/configs/sensors_multi.yaml` | `servoj_time: 0.01` / `lookahead` / `gain` |
+| `sensors/src/sensors/drivers/arm/cs_write.py` | `_servoj_once` / keepalive idle grace |
 | `sensors/src/sensors/drivers/arm/_cs_sdk.py` | 将 servoj_* 写入 EliteDriver cfg |
 | `sensors/src/sensors/drivers/arm/elite_write.py` | EC TT（对照） |
 | `sensors-arm/src/sensors_arm/abs_ramp.py` | CS dense 斜坡同样用 `servoj_once` |
@@ -216,4 +227,4 @@ EC 丝滑靠 TT **控制器侧缓冲吃流**；CS 没有对等池，**PC 侧设�
 ## 9. 一句话
 
 **EC 遥操作 = TT 池吃点；CS 遥操作 = 稠密 `servoj_once` 流吃点 + 控制器 `servoj_*` 平滑。**  
-阶段 A 已把连续下发从 `_servoj_stream` 改到 `_servoj_once`；若仍不够丝滑，再做阶段 B 后端定点频缓存池。
+阶段 A 改写路径；阶段 B.1 用后端定点频 latest-wins 写线程对齐设定点节奏，并抑制稠密期 keepalive idle。

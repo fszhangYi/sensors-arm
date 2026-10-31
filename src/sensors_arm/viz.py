@@ -776,7 +776,7 @@ PAGE = r"""<!DOCTYPE html>
           <button type="button" class="ok" id="btnRemoteConnect">拉取</button>
           <button type="button" class="danger" id="btnRemoteDisconnect" disabled>停止</button>
           <button type="button" class="ghost" id="btnRemotePrecheck" disabled title="采样 5s 确认静止后与硬件关节比 &lt;2°">预下发</button>
-          <button type="button" class="ok" id="btnRemoteSend" disabled title="预检通过后：实时远程 joints → CS dense writeServoj（servoj_once，无嵌套斜坡/无每点 idle）；再点停止">远程连续下发</button>
+          <button type="button" class="ok" id="btnRemoteSend" disabled title="预检通过后：实时远程 joints → 后端 100Hz latest-wins 写线程（CS servoj_once）；再点停止">远程连续下发</button>
         </div>
         <p class="hint" id="remoteHint">未拉取远程</p>
         <pre id="remoteDiffLog" aria-live="polite"></pre>
@@ -1055,9 +1055,18 @@ PAGE = r"""<!DOCTYPE html>
   function stopRemoteStreaming(armId) {
     const st = remoteState(armId);
     if (!st) return;
+    const was = !!st.remoteStreaming;
     st.remoteStreaming = false;
     st.streamWritePending = null;
     st.streamWriteInFlight = false;
+    if (was) {
+      // Backend write thread keeps ExternalControl via keepalive idle after stop.
+      fetch('/api/arm/teleop-stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ arm_id: armId, enabled: false }),
+      }).catch(() => {});
+    }
   }
 
   function clearRemoteSendGate(armId, reason) {
@@ -1207,7 +1216,7 @@ PAGE = r"""<!DOCTYPE html>
       el.className = 'hint';
     } else if (st.remoteStreaming) {
       const step = st.step != null ? st.step : '—';
-      el.textContent = '远程连续下发中 · CS servoj_once · step=' + step + '（再点按钮停止）';
+      el.textContent = '远程连续下发中 · 后端 100Hz 写线程 · step=' + step + '（再点按钮停止）';
       el.className = 'hint remote-hint-ok';
     } else if (st.on) {
       const step = st.step != null ? st.step : '—';
@@ -1359,6 +1368,7 @@ PAGE = r"""<!DOCTYPE html>
     const st = remoteState(armId);
     if (!st || !st.remoteStreaming || !Array.isArray(joints) || joints.length < 6) return;
     if (step != null && st.lastStreamedStep === step && !st.streamWritePending) return;
+    // Latest-wins: only push newest joints to backend setpoint (write @ 100Hz server-side).
     st.streamWritePending = { joints: joints.slice(0, 6), step: step };
     if (!st.streamWriteInFlight) flushRemoteStreamWrite(armId);
   }
@@ -1379,22 +1389,16 @@ PAGE = r"""<!DOCTYPE html>
       st.streamWritePending = null;
       st.streamWriteInFlight = true;
       try {
-        const body = {
-          arm_id: armId,
-          joints_rad: job.joints,
-          // CS: runtime maps teleop/direct → servoj_once dense writeServoj.
-          timing: 'teleop',
-        };
-        const r = await fetch('/api/arm/command', {
+        const r = await fetch('/api/arm/teleop-stream/setpoint', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
+          body: JSON.stringify({ arm_id: armId, joints_rad: job.joints }),
         }).then((x) => x.json());
         if (!st.remoteStreaming) return;
-        if (!r || !r.ok) {
+        if (!r || !r.ok || r.enabled === false) {
           stopRemoteStreaming(armId);
           st.sendReady = false;
-          toast((r && r.error) || '远程连续下发失败，已停止');
+          toast((r && (r.error || r.message)) || '远程连续下发失败，已停止');
           paintRemoteHint();
           return;
         }
@@ -1436,13 +1440,33 @@ PAGE = r"""<!DOCTYPE html>
       toast('尚无远程关节帧');
       return;
     }
-    // Start continuous direct stream (no abs-ramp).
+    // Start backend 100Hz latest-wins write thread; browser only pushes setpoints.
+    let start;
+    try {
+      start = await fetch('/api/arm/teleop-stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          arm_id: arm.id,
+          enabled: true,
+          joints_rad: st.joints.slice(0, 6),
+          hz: 100,
+        }),
+      }).then((x) => x.json());
+    } catch (e) {
+      toast('启动远程连续下发失败: ' + (e && e.message ? e.message : e));
+      return;
+    }
+    if (!start || !start.ok) {
+      toast((start && start.error) || '启动远程连续下发失败');
+      return;
+    }
     st.remoteStreaming = true;
     st.lastStreamedStep = null;
     st.streamWritePending = null;
     paintRemoteButtons();
     paintRemoteHint();
-    toast('远程连续下发已开始（稠密 servoj_once）');
+    toast('远程连续下发已开始（后端 100Hz · ' + (start.write_path || 'servoj_once') + '）');
     enqueueRemoteStreamWrite(arm.id, st.joints, st.step);
   }
 
@@ -3395,6 +3419,18 @@ class ArmMaxDeltaBody(BaseModel):
     max_delta_deg: float
 
 
+class ArmTeleopStreamBody(BaseModel):
+    arm_id: str
+    enabled: bool = True
+    joints_rad: list[float] | None = None
+    hz: float | None = None
+
+
+class ArmTeleopSetpointBody(BaseModel):
+    arm_id: str
+    joints_rad: list[float]
+
+
 def create_app(orch: Orchestrator) -> FastAPI:
     app = FastAPI(title="sensors-arm", docs_url="/api/docs")
     assets = static_dir()
@@ -3494,6 +3530,23 @@ def create_app(orch: Orchestrator) -> FastAPI:
     @app.post("/api/arm/max-delta")
     async def arm_max_delta_set(body: ArmMaxDeltaBody) -> dict[str, Any]:
         return orch.arm_max_delta_set(body.arm_id, body.max_delta_deg)
+
+    @app.get("/api/arm/teleop-stream")
+    async def arm_teleop_stream_get(arm_id: str | None = None) -> dict[str, Any]:
+        return orch.teleop_stream_status(arm_id)
+
+    @app.post("/api/arm/teleop-stream")
+    async def arm_teleop_stream_set(body: ArmTeleopStreamBody) -> dict[str, Any]:
+        return orch.teleop_stream_set(
+            body.arm_id,
+            enabled=body.enabled,
+            joints_rad=body.joints_rad,
+            hz=body.hz,
+        )
+
+    @app.post("/api/arm/teleop-stream/setpoint")
+    async def arm_teleop_stream_setpoint(body: ArmTeleopSetpointBody) -> dict[str, Any]:
+        return orch.teleop_stream_setpoint(body.arm_id, body.joints_rad)
 
     @app.post("/api/shutdown")
     async def shutdown() -> dict[str, Any]:

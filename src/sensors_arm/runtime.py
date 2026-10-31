@@ -91,6 +91,9 @@ class Orchestrator:
         self._connect_lock = threading.Lock()
         # UI-applied max_delta_deg overrides (survive driver config re-reads; not YAML).
         self._max_delta_deg_override: dict[str, float] = {}
+        # Remote continuous teleop: browser pushes latest joints; backend writes @ fixed Hz.
+        self._teleop_lock = threading.Lock()
+        self._teleop_streams: dict[str, dict[str, Any]] = {}
 
     def _arm_by_id(self, arm_id: str) -> ArmModelRef:
         for a in self.cfg.arms:
@@ -306,6 +309,7 @@ class Orchestrator:
             "sensors_site": self.manager.bundle.site,
             "sensors_dry_run": self.manager.ctx.dry_run,
             "arm_abs_ramp": self._abs_ramp.status(),
+            "teleop_stream": self.teleop_stream_status(),
             "connected_arms": sorted(self._connected),
         }
 
@@ -379,6 +383,10 @@ class Orchestrator:
                     self._abs_ramp.cancel(message=f"因断开 {arm_id} 取消绝对下发")
             except Exception:  # noqa: BLE001
                 pass
+            try:
+                self.teleop_stream_stop(arm_id, message=f"因断开 {arm_id} 停止连续下发")
+            except Exception:  # noqa: BLE001
+                pass
             writer = self.agents.get(arm.write_agent) if arm.write_agent else None
             reader = self.agents.get(arm.read_agent)
             # Writer shares sensor with reader: disarm/stop loop, reader closes sensor.
@@ -449,6 +457,10 @@ class Orchestrator:
         self._stop.set()
         try:
             self._abs_ramp.cancel(message="shutdown")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.teleop_stream_stop_all(message="shutdown")
         except Exception:  # noqa: BLE001
             pass
         join_t = 0.25 if for_shutdown else 2.0
@@ -537,6 +549,7 @@ class Orchestrator:
             "frames": frames,
             "dry_run": bool(self.manager.ctx.dry_run),
             "arm_abs_ramp": self._abs_ramp.status(),
+            "teleop_stream": self.teleop_stream_status(),
             "connected_arms": sorted(self._connected),
         }
 
@@ -624,6 +637,306 @@ class Orchestrator:
             return {"ok": False, "error": "read agent missing; refuse motion without live joints"}
         return reader, writer
 
+    @staticmethod
+    def _is_cs_arm_write(sensor: Any) -> bool:
+        kind_v = getattr(getattr(sensor, "kind", None), "value", None)
+        kind_s = str(
+            kind_v if kind_v is not None else getattr(sensor, "kind", "") or ""
+        )
+        return kind_s == "arm_cs_write"
+
+    def _writer_armed(self, writer: ArmWriteAgent) -> bool:
+        armed = bool(getattr(writer.sensor, "armed", False))
+        if not armed:
+            fr = writer.ring.latest.get()
+            if fr is not None:
+                armed = bool(fr.payload.get("armed"))
+        return armed
+
+    def teleop_stream_status(self, arm_id: str | None = None) -> dict[str, Any]:
+        """Snapshot of backend fixed-Hz teleop write stream(s)."""
+        with self._teleop_lock:
+            if arm_id is not None:
+                st = self._teleop_streams.get(arm_id)
+                if st is None:
+                    return {
+                        "arm_id": arm_id,
+                        "enabled": False,
+                        "hz": 100.0,
+                        "write_path": None,
+                    }
+                return {
+                    "arm_id": arm_id,
+                    "enabled": bool(st.get("enabled")),
+                    "hz": float(st.get("hz") or 100.0),
+                    "write_path": st.get("write_path"),
+                    "write_count": int(st.get("write_count") or 0),
+                    "last_ok": st.get("last_ok"),
+                    "last_error": st.get("last_error"),
+                    "message": st.get("message"),
+                    "last_t_wall": st.get("last_t_wall"),
+                    "has_setpoint": st.get("setpoint") is not None,
+                }
+            return {
+                aid: {
+                    "enabled": bool(st.get("enabled")),
+                    "hz": float(st.get("hz") or 100.0),
+                    "write_path": st.get("write_path"),
+                    "write_count": int(st.get("write_count") or 0),
+                    "last_ok": st.get("last_ok"),
+                    "last_error": st.get("last_error"),
+                    "message": st.get("message"),
+                    "last_t_wall": st.get("last_t_wall"),
+                    "has_setpoint": st.get("setpoint") is not None,
+                }
+                for aid, st in self._teleop_streams.items()
+            }
+
+    def teleop_stream_stop(
+        self, arm_id: str, *, message: str | None = None
+    ) -> dict[str, Any]:
+        """Stop the fixed-Hz write thread for one arm (keeps ExternalControl armed)."""
+        with self._teleop_lock:
+            st = self._teleop_streams.get(arm_id)
+            th = st.get("thread") if isinstance(st, dict) else None
+            stop_ev = st.get("stop") if isinstance(st, dict) else None
+            if isinstance(stop_ev, threading.Event):
+                stop_ev.set()
+            if isinstance(st, dict):
+                st["enabled"] = False
+                if message:
+                    st["message"] = message
+                st["last_t_wall"] = time.time()
+        if th is not None and th.is_alive() and th is not threading.current_thread():
+            th.join(timeout=2.0)
+        with self._teleop_lock:
+            st = self._teleop_streams.get(arm_id)
+            if isinstance(st, dict):
+                st["thread"] = None
+                st["enabled"] = False
+                if message and not st.get("message"):
+                    st["message"] = message
+        return {"ok": True, **self.teleop_stream_status(arm_id)}
+
+    def teleop_stream_stop_all(self, *, message: str | None = None) -> None:
+        with self._teleop_lock:
+            ids = list(self._teleop_streams.keys())
+        for aid in ids:
+            self.teleop_stream_stop(aid, message=message)
+
+    def teleop_stream_setpoint(
+        self, arm_id: str, joints_rad: list[float]
+    ) -> dict[str, Any]:
+        """Latest-wins setpoint for the backend write thread (does not write itself)."""
+        try:
+            q = [float(x) for x in joints_rad]
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "joints_rad must be 6 floats"}
+        if len(q) != 6 or any(not math.isfinite(x) for x in q):
+            return {"ok": False, "error": "joints_rad must be exactly 6 finite values"}
+        with self._teleop_lock:
+            st = self._teleop_streams.get(arm_id)
+            if not st or not st.get("enabled"):
+                enabled = False
+                last_err = (st or {}).get("last_error") if isinstance(st, dict) else None
+            else:
+                st["setpoint"] = q
+                st["last_t_wall"] = time.time()
+                enabled = True
+                last_err = st.get("last_error")
+        snap = self.teleop_stream_status(arm_id)
+        if not enabled:
+            return {
+                "ok": False,
+                "error": last_err or "teleop stream not enabled; start continuous send first",
+                **snap,
+            }
+        return {"ok": True, "arm_id": arm_id, **snap}
+
+    def teleop_stream_set(
+        self,
+        arm_id: str,
+        *,
+        enabled: bool,
+        joints_rad: list[float] | None = None,
+        hz: float | None = None,
+    ) -> dict[str, Any]:
+        """Start/stop backend fixed-Hz latest-wins teleop write (remote continuous)."""
+        if not enabled:
+            return self.teleop_stream_stop(
+                arm_id, message="已停止远程连续下发；ExternalControl 由 keepalive idle 保活"
+            )
+
+        resolved = self._resolve_rw(arm_id)
+        if isinstance(resolved, dict):
+            return resolved
+        _reader, writer = resolved
+
+        if arm_id not in self._connected:
+            return {
+                "ok": False,
+                "error": f"arm {arm_id!r} 未连接 — 请先点「连接」",
+                "connected": False,
+            }
+        if not self._writer_armed(writer):
+            return {
+                "ok": False,
+                "error": "arm_write not armed; click Arm before continuous teleop",
+            }
+
+        # Teleop stream wins over abs-ramp.
+        if self._abs_ramp.enabled:
+            self._abs_ramp.cancel(message="因远程连续下发取消斜坡")
+
+        write_hz = max(1.0, min(125.0, float(hz if hz is not None else 100.0)))
+        cs_dense = self._is_cs_arm_write(writer.sensor)
+        write_path = "cs_servoj_once" if cs_dense else "ec_tt"
+
+        seed: list[float] | None = None
+        if joints_rad is not None:
+            try:
+                seed = [float(x) for x in joints_rad]
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "joints_rad must be 6 floats"}
+            if len(seed) != 6 or any(not math.isfinite(x) for x in seed):
+                return {"ok": False, "error": "joints_rad must be exactly 6 finite values"}
+
+        # Restart cleanly if already running.
+        self.teleop_stream_stop(arm_id)
+
+        stop_ev = threading.Event()
+        st: dict[str, Any] = {
+            "enabled": True,
+            "stop": stop_ev,
+            "thread": None,
+            "setpoint": seed,
+            "hz": write_hz,
+            "write_path": write_path,
+            "write_count": 0,
+            "last_ok": None,
+            "last_error": None,
+            "message": f"远程连续下发中 · {write_hz:g} Hz · {write_path}",
+            "last_t_wall": time.time(),
+            "fail_streak": 0,
+        }
+        with self._teleop_lock:
+            self._teleop_streams[arm_id] = st
+
+        th = threading.Thread(
+            target=self._teleop_stream_loop,
+            name=f"teleop-stream-{arm_id}",
+            daemon=True,
+            args=(arm_id,),
+        )
+        with self._teleop_lock:
+            st["thread"] = th
+        th.start()
+        return {"ok": True, **self.teleop_stream_status(arm_id)}
+
+    def _teleop_stream_loop(self, arm_id: str) -> None:
+        """Fixed-Hz write of latest setpoint; decoupled from browser HTTP RTT."""
+        fail_max = 5
+        final_error: str | None = None
+        final_message: str | None = None
+        try:
+            while not self._stop.is_set():
+                with self._teleop_lock:
+                    st = self._teleop_streams.get(arm_id)
+                    if not st or not st.get("enabled"):
+                        break
+                    stop_ev: threading.Event = st["stop"]
+                    hz = float(st.get("hz") or 100.0)
+                    q = st.get("setpoint")
+                    write_path = st.get("write_path")
+                if stop_ev.is_set():
+                    break
+
+                period = 1.0 / max(1.0, hz)
+                if q is None:
+                    stop_ev.wait(period)
+                    continue
+
+                resolved = self._resolve_rw(arm_id)
+                if isinstance(resolved, dict):
+                    final_error = str(resolved.get("error") or "teleop agents missing")
+                    break
+                _reader, writer = resolved
+                if arm_id not in self._connected or not self._writer_armed(writer):
+                    final_error = "连接/Arm 已断开，已停止远程连续下发"
+                    break
+
+                if write_path == "cs_servoj_once" or self._is_cs_arm_write(writer.sensor):
+                    result = writer.command(
+                        joints_rad=list(q),
+                        servoj_once=True,
+                        relative_to_last=True,
+                        idle_after=False,
+                    )
+                else:
+                    base = self.latest_joints(arm_id, require_measured=True)
+                    ref = list(base) if base is not None else list(q)
+                    result = writer.command(
+                        joints_rad=list(q),
+                        reference_joints_rad=ref,
+                    )
+                ok = bool(result.get("ok")) if isinstance(result, dict) else bool(result)
+                with self._teleop_lock:
+                    st = self._teleop_streams.get(arm_id)
+                    if not st:
+                        break
+                    st["last_ok"] = ok
+                    st["last_t_wall"] = time.time()
+                    if ok:
+                        st["fail_streak"] = 0
+                        st["write_count"] = int(st.get("write_count") or 0) + 1
+                        st["last_error"] = None
+                        st["message"] = (
+                            f"远程连续下发中 · {hz:g} Hz · 已写 {st['write_count']}"
+                        )
+                    else:
+                        st["fail_streak"] = int(st.get("fail_streak") or 0) + 1
+                        st["last_error"] = (
+                            result.get("error")
+                            if isinstance(result, dict)
+                            else "write rejected"
+                        )
+                        if st["fail_streak"] >= fail_max:
+                            final_error = (
+                                "远程连续下发写臂连续失败："
+                                + str(st["last_error"])
+                                + "；已停止"
+                            )
+                            st["enabled"] = False
+                            stop_ev.set()
+                            break
+
+                stop_ev.wait(period)
+
+            if final_error is None and (
+                self._stop.is_set()
+                or (
+                    arm_id in self._teleop_streams
+                    and self._teleop_streams[arm_id].get("stop")
+                    and self._teleop_streams[arm_id]["stop"].is_set()
+                )
+            ):
+                final_message = "已停止远程连续下发；ExternalControl 由 keepalive idle 保活"
+        finally:
+            with self._teleop_lock:
+                st = self._teleop_streams.get(arm_id)
+                if st is not None:
+                    st["enabled"] = False
+                    st["thread"] = None
+                    if final_error:
+                        st["last_ok"] = False
+                        st["last_error"] = final_error
+                        st["message"] = final_error
+                    elif final_message:
+                        st["last_ok"] = True
+                        st["last_error"] = None
+                        st["message"] = final_message
+                    st["last_t_wall"] = time.time()
+
     def arm_command(
         self,
         arm_id: str,
@@ -675,6 +988,7 @@ class Orchestrator:
 
         if disarm or stop:
             self._abs_ramp.cancel(message="因 Disarm/Estop 取消绝对下发")
+            self.teleop_stream_stop(arm_id, message="因 Disarm/Estop 停止连续下发")
             return writer.command(disarm=True, stop=True)
 
         if joints_rad is not None:
@@ -685,12 +999,7 @@ class Orchestrator:
             if mode in ("direct", "immediate", "step", "teleop"):
                 if self._abs_ramp.enabled:
                     self._abs_ramp.cancel(message="因直接下发取消斜坡")
-                armed = bool(getattr(writer.sensor, "armed", False))
-                if not armed:
-                    fr = writer.ring.latest.get()
-                    if fr is not None:
-                        armed = bool(fr.payload.get("armed"))
-                if not armed:
+                if not self._writer_armed(writer):
                     return {
                         "ok": False,
                         "error": "arm_write not armed; click Arm before direct write",
@@ -710,13 +1019,7 @@ class Orchestrator:
                             "(CS66 needs RTSI)"
                         ),
                     }
-                kind_v = getattr(getattr(writer.sensor, "kind", None), "value", None)
-                kind_s = str(
-                    kind_v
-                    if kind_v is not None
-                    else getattr(writer.sensor, "kind", "") or ""
-                )
-                cs_dense = kind_s == "arm_cs_write"
+                cs_dense = self._is_cs_arm_write(writer.sensor)
                 if cs_dense:
                     # Guard vs last command (continuity); single writeServoj per frame.
                     wr = writer.command(

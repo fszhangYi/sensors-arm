@@ -40,8 +40,8 @@ defaults:
     stream_max_rad_s: 0.5
     # Prefer last_cmd over lagged RTSI when |Δ| under this (rad) — smoother UI jog
     cmd_continuity_rad: 0.10
-    # ExternalControl servoj smoothing (dense teleop / servoj_once)
-    servoj_time: 0.008
+    # ExternalControl servoj smoothing (dense teleop / servoj_once @ ~100 Hz)
+    servoj_time: 0.01
     # servoj lookahead (s); tuned 0.1→0.4→0.25 for teleop feel
     servoj_lookahead_time: 0.25
     servoj_gain: 300
@@ -81,8 +81,8 @@ devices:
       headless_mode: true
       require_rtsi: true
       stream_max_rad_s: 1.0
-      # Controllerside servoj smoothing (teleop / dense writeServoj):
-      servoj_time: 0.008
+      # Controllerside servoj smoothing (teleop / dense writeServoj @ ~100 Hz):
+      servoj_time: 0.01
       servoj_lookahead_time: 0.25
       servoj_gain: 300
       kinematics: cs66_kinematics
@@ -106,7 +106,7 @@ devices:
       require_rtsi: true
       stream_max_rad_s: 1.0
       # Teleop: dense servoj_once + these script params (see docs/cs66-remote-teleop-smooth.md)
-      servoj_time: 0.008
+      servoj_time: 0.01
       servoj_lookahead_time: 0.25
       servoj_gain: 300
       kinematics: cs66_kin_g26562
