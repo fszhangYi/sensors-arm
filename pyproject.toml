@@ -20,7 +20,8 @@ dependencies = [
 [project.optional-dependencies]
 elite = ["elirobots>=0.0.7", "loguru>=0.6.0,<0.7"]
 kinematics = ["scipy>=1.10"]
-dev = ["pytest>=7.0", "scipy>=1.10"]
+fov = ["matplotlib>=3.7"]
+dev = ["pytest>=7.0", "scipy>=1.10", "matplotlib>=3.7"]
 
 [project.scripts]
 sensors-arm = "sensors_arm.cli:main"

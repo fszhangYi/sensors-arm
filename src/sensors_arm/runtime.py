@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -25,7 +26,10 @@ from sensors_arm.config import (
     resolve_model,
 )
 from sensors_arm.fov import analyze as fov_analyze
+from sensors_arm.fov import build_export_zip as fov_build_export_zip
 from sensors_arm.fov import merge_camera_override
+from sensors_arm.fov import normalize_camera_units_mm
+from sensors_arm.fov_stl import extract_from_stls, write_arm_camera_to_config
 from sensors_arm.frame import Frame
 from sensors_arm.paths import ensure_sensors_import
 
@@ -52,8 +56,9 @@ class VizHub:
 
 
 class Orchestrator:
-    def __init__(self, cfg: ArmConfig) -> None:
+    def __init__(self, cfg: ArmConfig, config_path: str | Path | None = None) -> None:
         self.cfg = cfg
+        self.config_path: Path | None = Path(config_path).resolve() if config_path else None
         self._tcp_xyz = list(set_tcp_xyz(getattr(cfg, "tcp_xyz", None)))
         dry = cfg.dry_run
         self.manager = SensorManager.from_yaml(cfg.sensors_config, dry_run=dry)
@@ -289,32 +294,137 @@ class Orchestrator:
             except Exception:  # noqa: BLE001
                 pass
         try:
-            if not cfg.get("lens") or not cfg.get("look") or not cfg.get("right"):
-                raise ValueError("camera lens/look/right required")
-            if not cfg.get("modes"):
-                raise ValueError("camera modes[] required")
-            if not cfg.get("samples"):
-                raise ValueError("camera samples[] required")
-            # Convert meters → mm if units say so
-            work = dict(cfg)
-            if str(work.get("units") or "mm").lower() == "m":
-                work = dict(work)
-                work["lens"] = [float(x) * 1000.0 for x in work["lens"]]
-                if work.get("up"):
-                    # direction vectors unchanged
-                    pass
-                work["samples"] = [
-                    {
-                        **s,
-                        "xyz": [float(x) * 1000.0 for x in s["xyz"]],
-                    }
-                    for s in work["samples"]
-                ]
-                work["units"] = "mm"
+            work = self._fov_work_cfg(cfg)
             result = fov_analyze(work)
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "arm_id": arm_id, "error": str(e)}
-        return {"ok": True, "arm_id": arm_id, "label": arm.label or arm_id, "result": result}
+        return {
+            "ok": True,
+            "arm_id": arm_id,
+            "label": arm.label or arm_id,
+            "result": result,
+            "camera": work,
+        }
+
+    def _fov_work_cfg(self, cfg: dict[str, Any]) -> dict[str, Any]:
+        if not cfg.get("lens") or not cfg.get("look") or not cfg.get("right"):
+            raise ValueError("camera lens/look/right required")
+        if not cfg.get("modes"):
+            raise ValueError("camera modes[] required")
+        if not cfg.get("samples"):
+            raise ValueError("camera samples[] required")
+        return normalize_camera_units_mm(cfg)
+
+    def arm_fov_export(
+        self, arm_id: str, override: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Build a ZIP (report.md + JSON + schematic PNGs) for download."""
+        analyzed = self.arm_fov_analyze(arm_id, override)
+        if not analyzed.get("ok"):
+            return analyzed
+        try:
+            blob = fov_build_export_zip(
+                analyzed["result"],
+                analyzed.get("camera") or {},
+                arm_id=arm_id,
+                label=str(analyzed.get("label") or arm_id),
+            )
+        except ImportError as e:
+            return {
+                "ok": False,
+                "arm_id": arm_id,
+                "error": f"matplotlib required for FOV export: {e}. pip install matplotlib",
+            }
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "arm_id": arm_id, "error": str(e)}
+        from datetime import datetime, timezone
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        filename = f"fov_{arm_id}_{stamp}.zip"
+        return {
+            "ok": True,
+            "arm_id": arm_id,
+            "filename": filename,
+            "zip_bytes": blob,
+            "result": analyzed["result"],
+        }
+
+    def arm_fov_sync_stl(self, arm_id: str, *, write_yaml: bool = True) -> dict[str, Any]:
+        """Pull lens/look/right/samples from EOAT STL AABB; update memory + YAML."""
+        arm = self._arm_by_id(arm_id)
+        if arm.camera is None or not arm.camera.enabled:
+            return {
+                "ok": False,
+                "arm_id": arm_id,
+                "error": "this cell has no camera (camera.enabled=false)",
+            }
+        try:
+            extracted = extract_from_stls()
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "arm_id": arm_id, "error": str(e)}
+
+        patch = {
+            "lens": extracted["lens"],
+            "look": extracted["look"],
+            "right": extracted["right"],
+            "up": extracted.get("up"),
+            "samples": extracted["samples"],
+            "units": "mm",
+        }
+        # Merge into pydantic camera (keep modes / optics)
+        base = arm.camera.model_dump()
+        base.update({k: v for k, v in patch.items() if v is not None})
+        base["enabled"] = True
+        base["notes"] = (
+            "Synced from EOAT STL AABB heuristic; UI may still override modes/optics."
+        )
+        try:
+            new_cam = ArmCameraConfig.model_validate(base)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "arm_id": arm_id, "error": f"invalid camera after sync: {e}"}
+
+        # Replace arm in cfg.arms
+        new_arms = []
+        for a in self.cfg.arms:
+            if a.id == arm_id:
+                new_arms.append(a.model_copy(update={"camera": new_cam}))
+            else:
+                new_arms.append(a)
+        self.cfg = self.cfg.model_copy(update={"arms": new_arms})
+        self._camera_override.pop(arm_id, None)
+
+        yaml_path = None
+        if write_yaml:
+            if self.config_path is None or not self.config_path.is_file():
+                return {
+                    "ok": False,
+                    "arm_id": arm_id,
+                    "error": "config_path unknown; cannot rewrite YAML (restart via sensors-arm run -c …)",
+                    "camera": new_cam.model_dump(),
+                    "source": extracted.get("source"),
+                }
+            try:
+                yaml_path = str(
+                    write_arm_camera_to_config(self.config_path, arm_id, patch)
+                )
+            except Exception as e:  # noqa: BLE001
+                return {
+                    "ok": False,
+                    "arm_id": arm_id,
+                    "error": f"YAML write failed: {e}",
+                    "camera": new_cam.model_dump(),
+                    "source": extracted.get("source"),
+                }
+
+        return {
+            "ok": True,
+            "arm_id": arm_id,
+            "label": arm.label or arm_id,
+            "camera": new_cam.model_dump(),
+            "source": extracted.get("source"),
+            "yaml_path": yaml_path,
+            "wrote_yaml": bool(yaml_path),
+        }
 
     def _write_sensor_for_arm(self, arm_id: str) -> Any:
         arm = self._arm_by_id(arm_id)

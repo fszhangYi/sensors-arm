@@ -186,3 +186,289 @@ def merge_camera_override(base: dict[str, Any], override: dict[str, Any] | None)
             continue
         out[k] = v
     return out
+
+
+def normalize_camera_units_mm(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy with lens/samples in mm (direction vectors unchanged)."""
+    work = dict(cfg)
+    if str(work.get("units") or "mm").lower() != "m":
+        work["units"] = work.get("units") or "mm"
+        return work
+    work["lens"] = [float(x) * 1000.0 for x in work["lens"]]
+    work["samples"] = [
+        {**s, "xyz": [float(x) * 1000.0 for x in s["xyz"]]}
+        for s in work["samples"]
+    ]
+    work["units"] = "mm"
+    return work
+
+
+def write_report_md(
+    result: dict[str, Any],
+    *,
+    arm_id: str = "",
+    label: str = "",
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    """Markdown evaluation report (Chinese headings for operators)."""
+    cfg = cfg or {}
+    lines = [
+        "# 腕部相机视场校验报告",
+        "",
+        f"- 工位: `{label or arm_id or '—'}`",
+        f"- 相机: `{result.get('camera_model') or cfg.get('camera_model') or '—'}`",
+        f"- 坐标系: {result.get('frame') or cfg.get('frame') or '—'}",
+        f"- 单位: {result.get('units') or 'mm'}",
+        f"- 推荐档: **{result.get('recommend_mode') or '—'}**",
+        f"- LENS: `{np.round(result['lens'], 3).tolist()}`",
+        f"- look: `{np.round(result['look'], 4).tolist()}`",
+        f"- right: `{np.round(result['right'], 4).tolist()}`",
+        "",
+        "## 结论摘要",
+        "",
+    ]
+    modes = result.get("modes") or []
+    if modes:
+        best = next((m for m in modes if m.get("recommend")), modes[0])
+        lines.append(
+            f"推荐使用档位 `{best['id']}`"
+            f"（H×V = {best['H_deg']:.1f}°×{best['V_deg']:.1f}°，"
+            f"入画 {best['in_count']}/{best['n']}）。"
+        )
+        outs = [
+            p["name"]
+            for p in result.get("points") or []
+            if not (p.get("in_fov") or {}).get(best["id"], False)
+        ]
+        if outs:
+            lines.append(f"出画点: {', '.join(outs)}。")
+        else:
+            lines.append("全部采样点均在推荐档视场内。")
+    lines += [
+        "",
+        "## 档位对比",
+        "",
+        "| id | 分辨率 | H×V (°) | 入画 | 开口钩 H 裕量 | 推荐 |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for m in modes:
+        res = ""
+        if m.get("width") and m.get("height"):
+            res = f"{m['width']}×{m['height']}"
+        marg = m.get("open_hook_h_margin_deg")
+        marg_s = f"{marg:.1f}°" if marg is not None else "—"
+        lines.append(
+            f"| {m['id']} | {res or '—'} | {m['H_deg']:.1f}×{m['V_deg']:.1f} | "
+            f"{m['in_count']}/{m['n']} | {marg_s} | "
+            f"{'★' if m.get('recommend') else ''} |"
+        )
+    lines += [
+        "",
+        "## 采样点",
+        "",
+        "| name | tag | d (mm) | az (°) | el (°) |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for p in result.get("points") or []:
+        lines.append(
+            f"| {p.get('name','')} | {p.get('tag','')} | {p['d_mm']:.1f} | "
+            f"{p['az_deg']:.2f} | {p['el_deg']:.2f} |"
+        )
+    lines += [
+        "",
+        "## 示意图",
+        "",
+        "- `figures/fov_angular_compare.png` — 各档 FOV 角域框 vs 特征点 (az/el)",
+        "- `figures/fov_side_wedge.png` — 推荐档侧视楔形与深度",
+        "- `figures/fov_coverage_bars.png` — 各档入画数量条形图",
+        "",
+        "## 备注",
+        "",
+        result.get("notes") or cfg.get("notes") or "（无）",
+        "",
+        "> 本报告为针孔几何角域评估，不含内参标定 / 畸变 / 深度精度。",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _mpl():
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Polygon, Rectangle
+
+    return plt, Rectangle, Polygon
+
+
+def plot_angular_compare(result: dict[str, Any], path: Any) -> None:
+    plt, Rectangle, _Polygon = _mpl()
+    fig, ax = plt.subplots(figsize=(8.5, 5.5), dpi=140)
+    colors = ["#0d6e75", "#1a7a4c", "#c45c26", "#6b4c9a", "#333"]
+    for i, m in enumerate(result["modes"]):
+        H, V = m["H_deg"], m["V_deg"]
+        ax.add_patch(
+            Rectangle(
+                (-H / 2, -V / 2),
+                H,
+                V,
+                fill=False,
+                edgecolor=colors[i % len(colors)],
+                lw=1.8 if m.get("recommend") else 1.2,
+                linestyle="-" if m.get("recommend") else "--",
+                label=f"{m['id']} {H:.0f}×{V:.0f}" + (" ★" if m.get("recommend") else ""),
+            )
+        )
+    tag_style = {
+        "blade": ("o", "#d97816", 36),
+        "hook_c": ("o", "#0d6e75", 48),
+        "hook_o": ("^", "#6b4c9a", 55),
+        "root": ("x", "#c0392b", 60),
+    }
+    for p in result["points"]:
+        mk, c, s = tag_style.get(p.get("tag") or "", ("o", "#666", 28))
+        ax.scatter([p["az_deg"]], [p["el_deg"]], marker=mk, c=c, s=s, zorder=3)
+        ax.annotate(
+            p.get("name") or "",
+            (p["az_deg"], p["el_deg"]),
+            textcoords="offset points",
+            xytext=(4, 4),
+            fontsize=7,
+            color="#444",
+        )
+    ax.axhline(0, color="#bbb", lw=0.8)
+    ax.axvline(0, color="#bbb", lw=0.8)
+    ax.set_aspect("equal")
+    ax.set_xlabel("azimuth / °")
+    ax.set_ylabel("elevation / °")
+    ax.set_title("Feature points vs FOV crop boxes")
+    ax.legend(loc="upper right", fontsize=8)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(path, dpi=140)
+    plt.close(fig)
+
+
+def plot_side_wedge(result: dict[str, Any], path: Any) -> None:
+    """Side view in (look, up) plane: FOV elevation wedge + point depths."""
+    plt, _Rectangle, Polygon = _mpl()
+    modes = result.get("modes") or []
+    mode = next((m for m in modes if m.get("recommend")), modes[0] if modes else None)
+    if mode is None:
+        return
+    half_v = float(mode["half_V"])
+    fig, ax = plt.subplots(figsize=(8.0, 5.2), dpi=140)
+    d_max = max((p["d_mm"] for p in result["points"]), default=120.0) * 1.15
+    d_max = max(d_max, 80.0)
+    # wedge polygon in (depth along look, elevation offset ≈ d*tan(el))
+    top = math.tan(math.radians(half_v)) * d_max
+    bot = -top
+    wedge = Polygon(
+        [(0, 0), (d_max, bot), (d_max, top)],
+        closed=True,
+        facecolor=(0.05, 0.45, 0.48, 0.18),
+        edgecolor="#0d6e75",
+        lw=1.6,
+        label=f"{mode['id']} ±{half_v:.1f}° elev",
+    )
+    ax.add_patch(wedge)
+    for p in result["points"]:
+        d = float(p["d_mm"])
+        # lateral in up direction ≈ d * tan(el)
+        y = d * math.tan(math.radians(float(p["el_deg"])))
+        in_rec = (p.get("in_fov") or {}).get(mode["id"], False)
+        ax.scatter(
+            [d],
+            [y],
+            c=("#1a7a4c" if in_rec else "#c0392b"),
+            s=42,
+            zorder=3,
+            marker="o" if in_rec else "x",
+        )
+        ax.annotate(p.get("name") or "", (d, y), textcoords="offset points", xytext=(4, 3), fontsize=7)
+    ax.set_xlim(0, d_max)
+    ax.set_xlabel("depth along look / mm")
+    ax.set_ylabel("up-plane offset / mm")
+    ax.set_title(f"Side wedge · recommended `{mode['id']}`")
+    ax.legend(loc="upper left", fontsize=8)
+    ax.grid(True, alpha=0.3)
+    ax.set_aspect("equal", adjustable="datalim")
+    fig.tight_layout()
+    fig.savefig(path, dpi=140)
+    plt.close(fig)
+
+
+def plot_coverage_bars(result: dict[str, Any], path: Any) -> None:
+    plt, _Rectangle, _Polygon = _mpl()
+    modes = result.get("modes") or []
+    if not modes:
+        return
+    ids = [m["id"] for m in modes]
+    vals = [m["in_count"] for m in modes]
+    totals = [m["n"] for m in modes]
+    colors = ["#f0b429" if m.get("recommend") else "#3dd6c6" for m in modes]
+    fig, ax = plt.subplots(figsize=(7.5, 4.2), dpi=140)
+    bars = ax.bar(ids, vals, color=colors, edgecolor="#1a2433", width=0.55)
+    for bar, v, n in zip(bars, vals, totals):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            v + 0.08,
+            f"{v}/{n}",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+        )
+    ax.set_ylim(0, max(totals + [1]) + 1.2)
+    ax.set_ylabel("points in FOV")
+    ax.set_title("Coverage by stream mode (★ = recommend)")
+    ax.grid(True, axis="y", alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(path, dpi=140)
+    plt.close(fig)
+
+
+def build_export_zip(
+    result: dict[str, Any],
+    cfg: dict[str, Any],
+    *,
+    arm_id: str = "",
+    label: str = "",
+) -> bytes:
+    """Pack Markdown report + JSON + schematic PNGs into a zip (in-memory)."""
+    import io
+    import json
+    import zipfile
+    from datetime import datetime, timezone
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    root = f"fov_{arm_id or 'arm'}_{stamp}"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        md = write_report_md(result, arm_id=arm_id, label=label, cfg=cfg)
+        zf.writestr(f"{root}/report.md", md)
+        zf.writestr(
+            f"{root}/fov_summary.json",
+            json.dumps(result, indent=2, ensure_ascii=False),
+        )
+        zf.writestr(
+            f"{root}/camera_input.json",
+            json.dumps(cfg, indent=2, ensure_ascii=False),
+        )
+        # figures
+        for name, plot_fn in (
+            ("fov_angular_compare.png", plot_angular_compare),
+            ("fov_side_wedge.png", plot_side_wedge),
+            ("fov_coverage_bars.png", plot_coverage_bars),
+        ):
+            img = io.BytesIO()
+            plot_fn(result, img)
+            img.seek(0)
+            zf.writestr(f"{root}/figures/{name}", img.read())
+        readme = (
+            "sensors-arm FOV export\n"
+            f"arm={arm_id} label={label}\n"
+            "Open report.md; figures/ holds schematics.\n"
+        )
+        zf.writestr(f"{root}/README.txt", readme)
+    return buf.getvalue()

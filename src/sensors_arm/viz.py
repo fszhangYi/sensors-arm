@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -20,7 +20,8 @@ PAGE = r"""<!DOCTYPE html>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>sensors-arm</title>
-  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml"/>
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" sizes="any"/>
+  <link rel="shortcut icon" href="/assets/favicon.svg" type="image/svg+xml"/>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"/>
@@ -223,8 +224,21 @@ PAGE = r"""<!DOCTYPE html>
     }
     .remote-hint-ok { color: var(--ok) !important; }
     .remote-hint-err { color: var(--danger, #f07178) !important; }
-    .fov-block { margin: 0.85rem 0 0.35rem; }
-    .fov-block[hidden] { display: none !important; }
+    .fov-block { margin: 0.75rem 0 0.35rem; }
+    .fov-block.is-disabled .fov-fields { display: none; }
+    .arm-cam-badge {
+      display: inline-block;
+      margin-left: 0.35rem;
+      padding: 0.05rem 0.4rem;
+      border-radius: 999px;
+      border: 1px solid rgba(61, 214, 198, 0.4);
+      background: rgba(61, 214, 198, 0.12);
+      color: var(--accent);
+      font-size: 0.62rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      vertical-align: middle;
+    }
     .fov-res-row { flex-wrap: wrap; gap: 0.35rem 0.55rem; margin: 0.35rem 0; }
     .fov-result {
       margin: 0.45rem 0 0;
@@ -359,27 +373,37 @@ PAGE = r"""<!DOCTYPE html>
     }
     .tcp-drag-status.is-err { color: #ff8a9a; }
     .tcp-drag-status.is-ok { color: #7dcca0; }
-    .tcp-trail-clear {
-      --btn-h: 2rem;
+    .stage-tools {
       position: absolute;
       left: 0.65rem;
-      top: 50%;
-      transform: translateY(-50%);
+      top: 0.65rem;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.45rem;
+      margin: 0;
+      padding: 0;
+      pointer-events: none;
+    }
+    .stage-tools > * { pointer-events: auto; }
+    .tcp-trail-clear {
+      position: relative;
+      left: auto;
+      top: auto;
+      transform: none;
       z-index: 2;
       display: inline-flex;
       align-items: center;
-      justify-content: flex-start;
-      gap: 0;
+      justify-content: center;
       box-sizing: border-box;
+      width: 2rem;
       height: 2rem;
-      min-height: 2rem;
       min-width: 2rem;
-      width: max-content;
-      max-width: 2rem;
+      min-height: 2rem;
       margin: 0;
       padding: 0;
-      overflow: hidden;
-      white-space: nowrap;
+      overflow: visible;
       border: 1px solid rgba(255, 255, 255, 0.18);
       border-radius: 999px;
       background: rgba(11, 16, 24, 0.48);
@@ -389,7 +413,7 @@ PAGE = r"""<!DOCTYPE html>
       box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
       cursor: pointer;
       pointer-events: auto;
-      transition: max-width 0.22s ease, background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+      transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
     }
     .tcp-trail-clear-ico {
       flex: 0 0 auto;
@@ -401,47 +425,51 @@ PAGE = r"""<!DOCTYPE html>
       font-size: 0.82rem;
       font-weight: 700;
       line-height: 1;
-      transition: width 0.22s ease, opacity 0.15s ease;
+      pointer-events: none;
     }
+    /* Label floats beside the fixed circle — no size change → no hover twitch */
     .tcp-trail-clear-label {
-      flex: 0 0 auto;
+      position: absolute;
+      left: calc(100% + 0.4rem);
+      top: 50%;
+      transform: translateY(-50%);
       display: inline-block;
-      max-width: 0;
-      opacity: 0;
-      overflow: hidden;
+      padding: 0.28rem 0.55rem;
+      border: 1px solid rgba(61, 214, 198, 0.35);
+      border-radius: 999px;
+      background: rgba(11, 16, 24, 0.82);
+      color: #e8eef7;
       font-size: 0.72rem;
       font-weight: 550;
       line-height: 1;
-      transition: max-width 0.22s ease, opacity 0.15s ease, padding 0.22s ease;
+      white-space: nowrap;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+      transition: opacity 0.15s ease, visibility 0.15s ease;
     }
     .tcp-trail-clear:hover:not(:disabled),
     .tcp-trail-clear:focus-visible:not(:disabled) {
-      max-width: 10rem;
       background: rgba(11, 16, 24, 0.72);
       border-color: rgba(61, 214, 198, 0.45);
       color: #fff;
     }
-    .tcp-trail-clear:hover:not(:disabled) .tcp-trail-clear-ico,
-    .tcp-trail-clear:focus-visible:not(:disabled) .tcp-trail-clear-ico {
-      width: 0; opacity: 0;
-    }
     .tcp-trail-clear:hover:not(:disabled) .tcp-trail-clear-label,
     .tcp-trail-clear:focus-visible:not(:disabled) .tcp-trail-clear-label {
-      max-width: 7rem;
       opacity: 1;
-      padding-left: 0.7rem;
-      padding-right: 0.7rem;
+      visibility: visible;
     }
     .tcp-trail-color {
-      position: absolute;
-      left: 0.65rem;
-      top: calc(50% + 1.35rem);
+      position: relative;
+      left: auto;
+      top: auto;
       z-index: 2;
       display: inline-flex;
       align-items: center;
       gap: 0.35rem;
       margin: 0;
-      padding: 0.2rem 0.4rem 0.2rem 0.25rem;
+      padding: 0.28rem 0.5rem 0.28rem 0.28rem;
       border: 1px solid rgba(255, 255, 255, 0.18);
       border-radius: 999px;
       background: rgba(11, 16, 24, 0.48);
@@ -466,15 +494,15 @@ PAGE = r"""<!DOCTYPE html>
     }
     .tcp-trail-color-label { white-space: nowrap; opacity: 0.9; }
     .tcp-mass-control {
-      position: absolute;
-      left: 0.65rem;
-      top: calc(50% + 2.85rem);
+      position: relative;
+      left: auto;
+      top: auto;
       z-index: 2;
       display: inline-flex;
       align-items: center;
       gap: 0.4rem;
       margin: 0;
-      padding: 0.25rem 0.45rem 0.25rem 0.55rem;
+      padding: 0.28rem 0.5rem 0.28rem 0.55rem;
       border: 1px solid rgba(240, 180, 41, 0.35);
       border-radius: 999px;
       background: rgba(11, 16, 24, 0.48);
@@ -782,6 +810,54 @@ PAGE = r"""<!DOCTYPE html>
         <button type="button" class="danger" id="btnDisconnect" disabled>断开</button>
       </div>
       <p class="hint" id="connHint">当前臂：未连接</p>
+      <div class="fov-block" id="fovBlock">
+        <h2>视场校验</h2>
+        <p class="hint" id="fovGateHint">切换到带「相机」标记的 Cell（默认 Cell C）后可分析。</p>
+        <div class="fov-fields" id="fovFields">
+          <p class="hint">分辨率 / 焦距(fx,fy) / FOV 可改；留空 H/V 时由 W×H+fx/fy 推算。</p>
+          <div class="ip-row" title="相机型号">
+            <span class="k">型号</span>
+            <input type="text" class="v" id="fovModel" value="D405" autocomplete="off"/>
+          </div>
+          <div class="row fov-res-row">
+            <label class="hint">W <input type="number" id="fovW" value="1280" min="1" step="1" style="width:4.2rem"/></label>
+            <label class="hint">H <input type="number" id="fovH" value="720" min="1" step="1" style="width:4.2rem"/></label>
+            <label class="hint">fx <input type="number" id="fovFx" value="650" min="1" step="0.1" style="width:4.5rem" title="焦距像素 fx"/></label>
+            <label class="hint">fy <input type="number" id="fovFy" value="650" min="1" step="0.1" style="width:4.5rem" title="焦距像素 fy"/></label>
+          </div>
+          <div class="row fov-res-row">
+            <label class="hint">HFOV° <input type="number" id="fovHdeg" value="" step="0.1" style="width:4.2rem" placeholder="auto"/></label>
+            <label class="hint">VFOV° <input type="number" id="fovVdeg" value="" step="0.1" style="width:4.2rem" placeholder="auto"/></label>
+            <button type="button" class="ghost compact" id="btnFovFromFx" title="用 W/H/fx/fy 填入 H/V">由焦距算</button>
+          </div>
+          <label class="hint">档位
+            <select id="fovModeSelect" style="width:100%;margin-top:0.25rem"></select>
+          </label>
+          <div class="ip-row" title="镜头中心 tool-frame mm">
+            <span class="k">LENS</span>
+            <input type="text" class="v" id="fovLens" placeholder="-2.16, 96, 123" autocomplete="off"/>
+          </div>
+          <div class="ip-row" title="光轴单位向量">
+            <span class="k">LOOK</span>
+            <input type="text" class="v" id="fovLook" placeholder="0, -0.81, 0.58" autocomplete="off"/>
+          </div>
+          <div class="ip-row" title="相机右方向单位向量">
+            <span class="k">RIGHT</span>
+            <input type="text" class="v" id="fovRight" placeholder="-1, 0, 0" autocomplete="off"/>
+          </div>
+          <label class="hint">采样点（STL 同步后更新，只读）
+            <textarea id="fovSamples" readonly rows="6" style="width:100%;margin-top:0.25rem;font-family:IBM Plex Mono,monospace;font-size:0.68rem;resize:vertical;background:rgba(0,0,0,0.28);color:var(--muted);border:1px solid rgba(120,160,200,0.16);border-radius:8px;padding:0.4rem 0.5rem"></textarea>
+          </label>
+          <div class="row conn-row">
+            <button type="button" class="ghost" id="btnFovSyncStl" title="从 D405/指尖 STL 的 AABB 重算 LENS/LOOK/RIGHT/采样点，并写回 YAML">同步 STL</button>
+            <button type="button" class="ok" id="btnFovAnalyze">分析</button>
+            <button type="button" class="ok" id="btnFovExport" title="下载 ZIP：Markdown 报告 + 示意图 PNG + JSON">导出 ZIP</button>
+            <button type="button" class="ghost" id="btnFovReset">恢复默认</button>
+          </div>
+          <p class="hint" id="fovHint">选择已装相机的 Cell 后可分析</p>
+          <pre id="fovResult" class="fov-result" aria-live="polite"></pre>
+        </div>
+      </div>
       <div class="remote-block">
         <h2>远程关节</h2>
         <p class="hint">拉取 Gello 等源的 6 轴 JSON（字段 joints，rad），驱动本 Cell 三维画布；连接成功后自动 Disarm 一次。</p>
@@ -798,62 +874,24 @@ PAGE = r"""<!DOCTYPE html>
         <p class="hint" id="remoteHint">未拉取远程</p>
         <pre id="remoteDiffLog" aria-live="polite"></pre>
       </div>
-      <div class="fov-block" id="fovBlock" hidden>
-        <h2>视场校验</h2>
-        <p class="hint">仅对本 Cell 已启用相机的工位开放。分辨率 / 焦距(fx,fy) / FOV 可改；留空 H/V 时由 W×H+fx/fy 推算。</p>
-        <div class="ip-row" title="相机型号">
-          <span class="k">型号</span>
-          <input type="text" class="v" id="fovModel" value="D405" autocomplete="off"/>
-        </div>
-        <div class="row fov-res-row">
-          <label class="hint">W <input type="number" id="fovW" value="1280" min="1" step="1" style="width:4.2rem"/></label>
-          <label class="hint">H <input type="number" id="fovH" value="720" min="1" step="1" style="width:4.2rem"/></label>
-          <label class="hint">fx <input type="number" id="fovFx" value="650" min="1" step="0.1" style="width:4.5rem" title="焦距像素 fx"/></label>
-          <label class="hint">fy <input type="number" id="fovFy" value="650" min="1" step="0.1" style="width:4.5rem" title="焦距像素 fy"/></label>
-        </div>
-        <div class="row fov-res-row">
-          <label class="hint">HFOV° <input type="number" id="fovHdeg" value="" step="0.1" style="width:4.2rem" placeholder="auto"/></label>
-          <label class="hint">VFOV° <input type="number" id="fovVdeg" value="" step="0.1" style="width:4.2rem" placeholder="auto"/></label>
-          <button type="button" class="ghost compact" id="btnFovFromFx" title="用 W/H/fx/fy 填入 H/V">由焦距算</button>
-        </div>
-        <label class="hint">档位
-          <select id="fovModeSelect" style="width:100%;margin-top:0.25rem"></select>
-        </label>
-        <div class="ip-row" title="镜头中心 tool-frame mm">
-          <span class="k">LENS</span>
-          <input type="text" class="v" id="fovLens" placeholder="-2.16, 96, 123" autocomplete="off"/>
-        </div>
-        <div class="ip-row" title="光轴单位向量">
-          <span class="k">LOOK</span>
-          <input type="text" class="v" id="fovLook" placeholder="0, -0.81, 0.58" autocomplete="off"/>
-        </div>
-        <div class="ip-row" title="相机右方向单位向量">
-          <span class="k">RIGHT</span>
-          <input type="text" class="v" id="fovRight" placeholder="-1, 0, 0" autocomplete="off"/>
-        </div>
-        <div class="row conn-row">
-          <button type="button" class="ok" id="btnFovAnalyze">分析</button>
-          <button type="button" class="ghost" id="btnFovReset">恢复默认</button>
-        </div>
-        <p class="hint" id="fovHint">选择已装相机的 Cell 后可分析</p>
-        <pre id="fovResult" class="fov-result" aria-live="polite"></pre>
-      </div>
     </aside>
     <section class="panel" id="stageWrap">
       <h2 id="viewTitle">3D</h2>
       <div id="stage">
-        <button type="button" class="tcp-trail-clear" id="tcpTrailClear" aria-label="清除轨迹" title="清除 TCP 轨迹点与连线（不影响琥珀球）">
-          <span class="tcp-trail-clear-ico" aria-hidden="true">C</span>
-          <span class="tcp-trail-clear-label">清除轨迹</span>
-        </button>
-        <label class="tcp-trail-color" title="仅影响之后新增的轨迹点与连线">
-          <input type="color" id="tcpTrailColor" value="#3dd6c6" aria-label="轨迹颜色"/>
-          <span class="tcp-trail-color-label">轨迹色</span>
-        </label>
-        <div class="tcp-mass-control" title="平移与旋转共用：越大越钝（重质量阻尼）">
-          <span class="tcp-mass-label">阻尼</span>
-          <input type="range" id="tcpMass" min="5" max="200" step="1" value="28" aria-label="TCP 平移/旋转质量阻尼"/>
-          <span class="tcp-mass-val" id="tcpMassVal">28</span>
+        <div class="stage-tools" aria-label="轨迹与阻尼工具">
+          <button type="button" class="tcp-trail-clear" id="tcpTrailClear" aria-label="清除轨迹" title="清除 TCP 轨迹点与连线（不影响琥珀球）">
+            <span class="tcp-trail-clear-ico" aria-hidden="true">C</span>
+            <span class="tcp-trail-clear-label">清除轨迹</span>
+          </button>
+          <label class="tcp-trail-color" title="仅影响之后新增的轨迹点与连线">
+            <input type="color" id="tcpTrailColor" value="#3dd6c6" aria-label="轨迹颜色"/>
+            <span class="tcp-trail-color-label">轨迹色</span>
+          </label>
+          <div class="tcp-mass-control" title="平移与旋转共用：越大越钝（重质量阻尼）">
+            <span class="tcp-mass-label">阻尼</span>
+            <input type="range" id="tcpMass" min="5" max="200" step="1" value="28" aria-label="TCP 平移/旋转质量阻尼"/>
+            <span class="tcp-mass-val" id="tcpMassVal">28</span>
+          </div>
         </div>
         <button type="button" class="tcp-hold-resume" id="tcpHoldResume" hidden title="（已改为拖拽结束后自动恢复跟随）">恢复跟随</button>
         <div class="tcp-drag-panel" id="tcpDragPanel" hidden>
@@ -3099,8 +3137,11 @@ PAGE = r"""<!DOCTYPE html>
       b.className = 'arm-tab' + (a.id === activeId ? ' active' : '');
       const on = !!a.connected;
       const ip = a.robot_ip || (a.endpoint ? String(a.endpoint).split(':')[0] : '');
+      const camOn = !!(a.camera && a.camera.enabled);
       b.innerHTML = '<strong><span class="conn-dot' + (on ? ' on' : '') + '"></span>'
-        + (a.label || a.id) + '</strong>'
+        + (a.label || a.id)
+        + (camOn ? '<span class="arm-cam-badge">相机</span>' : '')
+        + '</strong>'
         + '<span class="sub">' + (a.brand || '') + ' ' + (a.product || a.model)
         + (ip ? ' · ' + ip : '')
         + (a.write_agent ? ' · R/W' : ' · RO')
@@ -3151,6 +3192,14 @@ PAGE = r"""<!DOCTYPE html>
     if (Array.isArray(cam.lens)) $('fovLens').value = cam.lens.map((x) => Number(x)).join(', ');
     if (Array.isArray(cam.look)) $('fovLook').value = cam.look.map((x) => Number(x)).join(', ');
     if (Array.isArray(cam.right)) $('fovRight').value = cam.right.map((x) => Number(x)).join(', ');
+    const sampEl = $('fovSamples');
+    if (sampEl) {
+      const samples = Array.isArray(cam.samples) ? cam.samples : [];
+      sampEl.value = samples.map((s) => {
+        const xyz = Array.isArray(s.xyz) ? s.xyz.map((x) => Number(x).toFixed(3)).join(', ') : '';
+        return (s.name || '?') + ' [' + (s.tag || '') + ']  ' + xyz;
+      }).join(String.fromCharCode(10));
+    }
     $('fovHint').textContent = cam.notes || '可改分辨率 / fx·fy / H·V 后点分析';
     $('fovResult').textContent = '';
   }
@@ -3168,12 +3217,23 @@ PAGE = r"""<!DOCTYPE html>
   function syncFovPanel() {
     const arm = activeArm();
     const block = $('fovBlock');
+    const fields = $('fovFields');
+    const gate = $('fovGateHint');
+    if (!block) return;
     if (!cameraEnabled(arm)) {
-      block.hidden = true;
+      block.classList.add('is-disabled');
+      if (fields) fields.hidden = true;
+      if (gate) {
+        gate.hidden = false;
+        gate.textContent = '当前 Cell 未装腕部相机。请点左侧带「相机」标记的工位（默认 Cell C · CS66 G26562）。';
+      }
       return;
     }
-    block.hidden = false;
+    block.classList.remove('is-disabled');
+    if (fields) fields.hidden = false;
+    if (gate) gate.hidden = true;
     fillFovForm(arm.camera);
+    try { block.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (_) {}
   }
 
   function fovDegFromFx() {
@@ -3257,7 +3317,7 @@ PAGE = r"""<!DOCTYPE html>
           + (ok == null ? '' : (ok ? '  IN' : '  OUT'))
       );
     });
-    return lines.join('\\n');
+    return lines.join(String.fromCharCode(10));
   }
 
   async function runFovAnalyze() {
@@ -3287,6 +3347,53 @@ PAGE = r"""<!DOCTYPE html>
     if (!r.ok) toast(r.error || 'FOV 分析失败');
   }
 
+  async function runFovExport() {
+    const arm = activeArm();
+    if (!cameraEnabled(arm)) { toast('本 Cell 未配置相机'); return; }
+    let body;
+    try {
+      body = { arm_id: arm.id, camera: buildFovOverrideFromForm(arm) };
+    } catch (e) {
+      toast(String(e && e.message || e));
+      return;
+    }
+    $('fovHint').textContent = '正在打包 ZIP（报告 + 示意图）…';
+    try {
+      const resp = await fetch('/api/fov/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const ctype = (resp.headers.get('content-type') || '').toLowerCase();
+      if (!resp.ok || ctype.indexOf('application/json') >= 0) {
+        const r = await resp.json().catch(() => ({ ok: false, error: 'export failed' }));
+        $('fovHint').textContent = r.error || '导出失败';
+        toast(r.error || '导出失败（若提示 matplotlib，请 pip install matplotlib）');
+        return;
+      }
+      const blob = await resp.blob();
+      let fname = 'fov_export.zip';
+      const cd = resp.headers.get('content-disposition') || '';
+      const m = /filename=\"?([^\";]+)\"?/i.exec(cd);
+      if (m && m[1]) fname = m[1];
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fname;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      $('fovHint').textContent = '已下载 ' + fname;
+      toast('已导出 ' + fname);
+      // Also refresh text summary from analyze
+      runFovAnalyze();
+    } catch (e) {
+      $('fovHint').textContent = String(e && e.message || e);
+      toast('导出失败');
+    }
+  }
+
   async function resetFovForm() {
     const arm = activeArm();
     if (!arm) return;
@@ -3296,6 +3403,32 @@ PAGE = r"""<!DOCTYPE html>
       fillFovForm(r.camera);
       $('fovHint').textContent = '已恢复为配置默认（含会话覆盖前请重启以清覆盖）';
     }
+  }
+
+  async function runFovSyncStl() {
+    const arm = activeArm();
+    if (!cameraEnabled(arm)) { toast('本 Cell 未配置相机'); return; }
+    if (!window.confirm('从 EOAT STL 重算镜头/光轴/指尖采样点，并写回后端 YAML？')) return;
+    $('fovHint').textContent = '正在从 STL 同步…';
+    const r = await fetch('/api/fov/sync-stl', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ arm_id: arm.id, write_yaml: true }),
+    }).then((x) => x.json()).catch((e) => ({ ok: false, error: String(e) }));
+    if (!r.ok) {
+      $('fovHint').textContent = r.error || '同步失败';
+      toast(r.error || '同步 STL 失败');
+      if (r.camera) {
+        arm.camera = r.camera;
+        fillFovForm(r.camera);
+      }
+      return;
+    }
+    arm.camera = r.camera;
+    fillFovForm(r.camera);
+    const yp = r.yaml_path ? (' · 已写 ' + r.yaml_path) : '';
+    $('fovHint').textContent = '已从 STL 同步 LENS/LOOK/RIGHT/采样点' + yp;
+    toast('STL 参数已同步到前端与 YAML');
   }
 
   function renderControls() {
@@ -3406,7 +3539,9 @@ PAGE = r"""<!DOCTYPE html>
       applyFovModeFields(modes[i] || {});
     };
     $('btnFovFromFx').onclick = () => fovDegFromFx();
+    $('btnFovSyncStl').onclick = () => runFovSyncStl();
     $('btnFovAnalyze').onclick = () => runFovAnalyze();
+    $('btnFovExport').onclick = () => runFovExport();
     $('btnFovReset').onclick = () => resetFovForm();
 
     $('btnMaxDeltaApply').onclick = () => applyArmMaxDelta();
@@ -3685,6 +3820,11 @@ class FovCameraBody(BaseModel):
     camera: dict[str, Any] = Field(default_factory=dict)
 
 
+class FovSyncStlBody(BaseModel):
+    arm_id: str
+    write_yaml: bool = True
+
+
 def create_app(orch: Orchestrator) -> FastAPI:
     app = FastAPI(title="sensors-arm", docs_url="/api/docs")
     assets = static_dir()
@@ -3817,6 +3957,31 @@ def create_app(orch: Orchestrator) -> FastAPI:
     @app.post("/api/fov/analyze")
     async def fov_analyze_api(body: FovAnalyzeBody) -> dict[str, Any]:
         return await asyncio.to_thread(orch.arm_fov_analyze, body.arm_id, body.camera)
+
+    @app.post("/api/fov/sync-stl")
+    async def fov_sync_stl_api(body: FovSyncStlBody) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            orch.arm_fov_sync_stl, body.arm_id, write_yaml=body.write_yaml
+        )
+
+    @app.post("/api/fov/export")
+    async def fov_export_api(body: FovAnalyzeBody) -> Response:
+        out = await asyncio.to_thread(orch.arm_fov_export, body.arm_id, body.camera)
+        if not out.get("ok"):
+            return JSONResponse(
+                {"ok": False, "arm_id": body.arm_id, "error": out.get("error") or "export failed"},
+                status_code=400,
+            )
+        data = out["zip_bytes"]
+        fname = str(out.get("filename") or "fov_export.zip")
+        return Response(
+            content=data,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{fname}"',
+                "Content-Length": str(len(data)),
+            },
+        )
 
     @app.post("/api/shutdown")
     async def shutdown() -> dict[str, Any]:

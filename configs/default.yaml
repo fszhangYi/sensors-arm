@@ -72,9 +72,10 @@ arms:
       camera_model: D405
       frame: "EFG-C65 tool frame (m→mm); X open, Y lateral, Z toward tip"
       units: mm
-      lens: [-2.16, 96.0, 123.0]
-      look: [0.0183, -0.8119, 0.5835]
-      right: [-0.9995, 0.0, 0.0313]
+      up: [-0.000532, 0.583054, 0.812433]
+      lens: [0.045, 95.734, 123.294]
+      look: [-0.000382, -0.812433, 0.583054]
+      right: [1.000000, -0.000000, 0.000655]
       modes:
         - id: HD87
           label: "1280×720 · 产品页 87×58"

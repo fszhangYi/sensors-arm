@@ -24,7 +24,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         rt = cfg.runtime.model_copy(update={"viz_port": int(args.port)})
         cfg = cfg.model_copy(update={"runtime": rt})
 
-    orch = Orchestrator(cfg)
+    orch = Orchestrator(cfg, config_path=cfg_path)
     app = create_app(orch)
     host = cfg.runtime.viz_host
     port = cfg.runtime.viz_port

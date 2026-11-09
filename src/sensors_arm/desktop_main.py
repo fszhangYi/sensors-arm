@@ -24,13 +24,14 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     capture_launch_cwd()
-    cfg = load_config(resolve_config_path(args.config))
+    cfg_path = resolve_config_path(args.config)
+    cfg = load_config(cfg_path)
     if args.no_dry_run:
         cfg = cfg.model_copy(update={"dry_run": False})
     if args.port is not None:
         cfg = cfg.model_copy(update={"runtime": cfg.runtime.model_copy(update={"viz_port": args.port})})
 
-    orch = Orchestrator(cfg)
+    orch = Orchestrator(cfg, config_path=cfg_path)
     app = create_app(orch)
     host = cfg.runtime.viz_host
     port = int(cfg.runtime.viz_port)

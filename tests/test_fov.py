@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
-from sensors_arm.config import ArmCameraConfig, ArmConfig, load_config
-from sensors_arm.fov import analyze, fov_from_intrinsics, resolve_mode_fov
+import io
+import zipfile
+
+import pytest
+
+from sensors_arm.config import ArmCameraConfig, load_config
+from sensors_arm.fov import analyze, build_export_zip, fov_from_intrinsics, resolve_mode_fov
 from sensors_arm.paths import project_root
 
 
@@ -50,3 +55,51 @@ def test_camera_config_roundtrip():
     assert cam.enabled
     H, V = resolve_mode_fov(cam.modes[0].model_dump())
     assert H > 0 and V > 0
+
+
+def test_export_zip_contains_report_and_figures():
+    pytest.importorskip("matplotlib")
+    cfg = load_config(project_root() / "configs" / "default.yaml")
+    arm_c = next(a for a in cfg.arms if a.id == "arm-c")
+    cam = arm_c.camera.model_dump()
+    result = analyze(cam)
+    blob = build_export_zip(result, cam, arm_id="arm-c", label="Cell C")
+    assert blob[:2] == b"PK"
+    with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+        names = zf.namelist()
+        assert any(n.endswith("report.md") for n in names)
+        assert any(n.endswith("fov_summary.json") for n in names)
+        assert any(n.endswith("figures/fov_angular_compare.png") for n in names)
+        assert any(n.endswith("figures/fov_side_wedge.png") for n in names)
+        assert any(n.endswith("figures/fov_coverage_bars.png") for n in names)
+        md = next(n for n in names if n.endswith("report.md"))
+        text = zf.read(md).decode("utf-8")
+        assert "视场校验" in text
+
+
+def test_extract_and_patch_yaml_from_stl(tmp_path):
+    from sensors_arm.fov_stl import extract_from_stls, patch_arm_camera_yaml
+
+    extracted = extract_from_stls()
+    assert len(extracted["lens"]) == 3
+    assert len(extracted["samples"]) >= 4
+    src = (project_root() / "configs" / "default.yaml").read_text(encoding="utf-8")
+    patched = patch_arm_camera_yaml(
+        src,
+        "arm-c",
+        {
+            "lens": extracted["lens"],
+            "look": extracted["look"],
+            "right": extracted["right"],
+            "samples": extracted["samples"],
+        },
+    )
+    assert "lens:" in patched
+    # Write to temp and reload
+    p = tmp_path / "default.yaml"
+    p.write_text(patched, encoding="utf-8")
+    cfg = load_config(p)
+    arm_c = next(a for a in cfg.arms if a.id == "arm-c")
+    assert arm_c.camera and arm_c.camera.enabled
+    assert arm_c.camera.lens == pytest.approx(extracted["lens"], abs=1e-3)
+    assert len(arm_c.camera.samples) == len(extracted["samples"])
