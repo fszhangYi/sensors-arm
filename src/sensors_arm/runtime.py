@@ -16,12 +16,16 @@ from sensors_arm.agents.arm_write_agent import ArmWriteAgent
 from sensors_arm.agents.base import BaseAgent
 from sensors_arm.arm_pose import cartesian_payload, set_tcp_xyz, xyzrpy_to_joints_rad
 from sensors_arm.config import (
+    ArmCameraConfig,
     ArmConfig,
     ArmModelRef,
+    camera_config_dict,
     config_summary,
     parse_home_joints,
     resolve_model,
 )
+from sensors_arm.fov import analyze as fov_analyze
+from sensors_arm.fov import merge_camera_override
 from sensors_arm.frame import Frame
 from sensors_arm.paths import ensure_sensors_import
 
@@ -94,6 +98,8 @@ class Orchestrator:
         # Remote continuous teleop: browser pushes latest joints; backend writes @ fixed Hz.
         self._teleop_lock = threading.Lock()
         self._teleop_streams: dict[str, dict[str, Any]] = {}
+        # Runtime camera FOV overrides from UI (do not rewrite YAML).
+        self._camera_override: dict[str, dict[str, Any]] = {}
 
     def _arm_by_id(self, arm_id: str) -> ArmModelRef:
         for a in self.cfg.arms:
@@ -219,9 +225,96 @@ class Orchestrator:
                     "robot_tcp_port": net["robot_tcp_port"],
                     "endpoint": net["endpoint"],
                     "max_delta_deg": self.arm_max_delta_get(arm.id).get("max_delta_deg"),
+                    "camera": self.arm_camera_get(arm.id),
                 }
             )
         return out
+
+    def arm_camera_get(self, arm_id: str) -> dict[str, Any] | None:
+        """Effective per-arm camera FOV config (YAML + UI override)."""
+        arm = self._arm_by_id(arm_id)
+        base = camera_config_dict(arm)
+        if base is None:
+            return {"enabled": False, "arm_id": arm_id}
+        ov = self._camera_override.get(arm_id)
+        merged = merge_camera_override(base, ov)
+        merged["arm_id"] = arm_id
+        merged["enabled"] = bool(merged.get("enabled"))
+        return merged
+
+    def arm_camera_set(self, arm_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+        """Merge UI camera params into runtime override (session-only)."""
+        arm = self._arm_by_id(arm_id)
+        if arm.camera is None or not arm.camera.enabled:
+            return {
+                "ok": False,
+                "arm_id": arm_id,
+                "error": "this cell has no camera (camera.enabled=false)",
+            }
+        if not isinstance(patch, dict):
+            return {"ok": False, "arm_id": arm_id, "error": "body must be an object"}
+        # Keep enabled true for cells that ship with a camera; UI cannot invent cameras.
+        clean = {k: v for k, v in patch.items() if k not in ("arm_id",)}
+        clean["enabled"] = True
+        try:
+            # Validate by merging into pydantic model
+            base = camera_config_dict(arm) or {}
+            trial = merge_camera_override(base, {**self._camera_override.get(arm_id, {}), **clean})
+            ArmCameraConfig.model_validate(trial)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "arm_id": arm_id, "error": str(e)}
+        cur = dict(self._camera_override.get(arm_id) or {})
+        cur.update(clean)
+        self._camera_override[arm_id] = cur
+        return {"ok": True, "arm_id": arm_id, "camera": self.arm_camera_get(arm_id)}
+
+    def arm_fov_analyze(
+        self, arm_id: str, override: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Geometric FOV coverage for a camera-equipped cell."""
+        arm = self._arm_by_id(arm_id)
+        if arm.camera is None or not arm.camera.enabled:
+            return {
+                "ok": False,
+                "arm_id": arm_id,
+                "error": "this cell has no camera (camera.enabled=false)",
+            }
+        cfg = self.arm_camera_get(arm_id) or {}
+        if override:
+            cfg = merge_camera_override(cfg, override)
+            # Persist last UI tweak for subsequent GET
+            try:
+                self.arm_camera_set(arm_id, override)
+                cfg = self.arm_camera_get(arm_id) or cfg
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            if not cfg.get("lens") or not cfg.get("look") or not cfg.get("right"):
+                raise ValueError("camera lens/look/right required")
+            if not cfg.get("modes"):
+                raise ValueError("camera modes[] required")
+            if not cfg.get("samples"):
+                raise ValueError("camera samples[] required")
+            # Convert meters → mm if units say so
+            work = dict(cfg)
+            if str(work.get("units") or "mm").lower() == "m":
+                work = dict(work)
+                work["lens"] = [float(x) * 1000.0 for x in work["lens"]]
+                if work.get("up"):
+                    # direction vectors unchanged
+                    pass
+                work["samples"] = [
+                    {
+                        **s,
+                        "xyz": [float(x) * 1000.0 for x in s["xyz"]],
+                    }
+                    for s in work["samples"]
+                ]
+                work["units"] = "mm"
+            result = fov_analyze(work)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "arm_id": arm_id, "error": str(e)}
+        return {"ok": True, "arm_id": arm_id, "label": arm.label or arm_id, "result": result}
 
     def _write_sensor_for_arm(self, arm_id: str) -> Any:
         arm = self._arm_by_id(arm_id)

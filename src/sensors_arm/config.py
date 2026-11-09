@@ -55,6 +55,74 @@ class ArmAbsRampConfig(BaseModel):
         return s
 
 
+class ArmCameraMode(BaseModel):
+    """One stream / crop profile for FOV checks.
+
+    Provide either ``H_deg``+``V_deg``, or ``width``+``height``+``fx``+``fy``
+    (focal length in pixels). Frontend may send both; degrees win when set.
+    """
+
+    id: str
+    label: str | None = None
+    width: int | None = None
+    height: int | None = None
+    fx: float | None = None
+    fy: float | None = None
+    H_deg: float | None = None
+    V_deg: float | None = None
+    aspect: str | None = None
+
+
+class ArmCameraSample(BaseModel):
+    name: str = ""
+    xyz: list[float]
+    tag: str = ""
+
+    @field_validator("xyz", mode="before")
+    @classmethod
+    def _xyz3(cls, v: Any) -> list[float]:
+        if not isinstance(v, (list, tuple)) or len(v) != 3:
+            raise ValueError("sample xyz must be length-3")
+        out = [float(x) for x in v]
+        if any(x != x or x in (float("inf"), float("-inf")) for x in out):
+            raise ValueError("sample xyz must be finite")
+        return out
+
+
+class ArmCameraConfig(BaseModel):
+    """Per-cell wrist/EOAT camera FOV validation inputs.
+
+    Not every cell mounts a camera — leave unset or ``enabled: false``.
+    Extrinsics and samples are in the gripper tool frame (default mm).
+    """
+
+    enabled: bool = False
+    camera_model: str = "D405"
+    frame: str = "gripper tool frame"
+    units: Literal["mm", "m"] = "mm"
+    # Lens center + camera axes (same units as samples)
+    lens: list[float] | None = None
+    look: list[float] | None = None
+    right: list[float] | None = None
+    up: list[float] | None = None
+    modes: list[ArmCameraMode] = Field(default_factory=list)
+    samples: list[ArmCameraSample] = Field(default_factory=list)
+    footprint_depths_mm: list[float] = Field(default_factory=lambda: [90.0, 118.0, 120.0])
+    notes: str | None = None
+
+    @field_validator("lens", "look", "right", "up", mode="before")
+    @classmethod
+    def _vec3(cls, v: Any) -> list[float] | None:
+        if v is None or v == "":
+            return None
+        if not isinstance(v, (list, tuple)) or len(v) != 3:
+            raise ValueError("camera vectors must be length-3")
+        out = [float(x) for x in v]
+        if any(x != x or x in (float("inf"), float("-inf")) for x in out):
+            raise ValueError("camera vectors must be finite")
+        return out
+
+
 class ArmModelRef(BaseModel):
     """Visualization / kinematics profile for one physical arm."""
 
@@ -69,6 +137,8 @@ class ArmModelRef(BaseModel):
     home_joints_rad: list[float] | None = None
     tcp_xyz: list[float] | None = None
     num_joints: int | None = None
+    # Per-cell camera FOV (Cell C yes; Cell A/B typically disabled)
+    camera: ArmCameraConfig | None = None
 
     @field_validator("home_joints_rad", mode="before")
     @classmethod
@@ -323,12 +393,20 @@ def config_summary(cfg: ArmConfig) -> dict[str, Any]:
                 "model": a.model,
                 "read_agent": a.read_agent,
                 "write_agent": a.write_agent,
+                "camera_enabled": bool(a.camera and a.camera.enabled),
             }
             for a in cfg.arms
         ],
         "agents": [{"id": a.id, "type": a.type, "sensor_id": a.sensor_id} for a in cfg.agents],
         "runtime": cfg.runtime.model_dump(),
     }
+
+
+def camera_config_dict(arm: ArmModelRef) -> dict[str, Any] | None:
+    """Serialize per-arm camera block for API/UI; None if unset."""
+    if arm.camera is None:
+        return None
+    return arm.camera.model_dump()
 
 
 def parse_home_joints(raw: Any, n: int = 6) -> tuple[list[float] | None, str | None]:

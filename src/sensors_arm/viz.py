@@ -223,6 +223,23 @@ PAGE = r"""<!DOCTYPE html>
     }
     .remote-hint-ok { color: var(--ok) !important; }
     .remote-hint-err { color: var(--danger, #f07178) !important; }
+    .fov-block { margin: 0.85rem 0 0.35rem; }
+    .fov-block[hidden] { display: none !important; }
+    .fov-res-row { flex-wrap: wrap; gap: 0.35rem 0.55rem; margin: 0.35rem 0; }
+    .fov-result {
+      margin: 0.45rem 0 0;
+      padding: 0.5rem 0.6rem;
+      max-height: 11rem;
+      overflow: auto;
+      border-radius: 10px;
+      border: 1px solid rgba(120,160,200,0.16);
+      background: rgba(0,0,0,0.28);
+      color: var(--muted);
+      font-family: "IBM Plex Mono", "IBM Plex Sans", monospace;
+      font-size: 0.68rem;
+      line-height: 1.35;
+      white-space: pre-wrap;
+    }
     .copy-row { margin: 0.4rem 0 0.65rem; }
     .copy-row .hint { margin: 0; align-self: center; color: var(--accent); font-size: 0.72rem; }
     .ip-row {
@@ -780,6 +797,46 @@ PAGE = r"""<!DOCTYPE html>
         </div>
         <p class="hint" id="remoteHint">未拉取远程</p>
         <pre id="remoteDiffLog" aria-live="polite"></pre>
+      </div>
+      <div class="fov-block" id="fovBlock" hidden>
+        <h2>视场校验</h2>
+        <p class="hint">仅对本 Cell 已启用相机的工位开放。分辨率 / 焦距(fx,fy) / FOV 可改；留空 H/V 时由 W×H+fx/fy 推算。</p>
+        <div class="ip-row" title="相机型号">
+          <span class="k">型号</span>
+          <input type="text" class="v" id="fovModel" value="D405" autocomplete="off"/>
+        </div>
+        <div class="row fov-res-row">
+          <label class="hint">W <input type="number" id="fovW" value="1280" min="1" step="1" style="width:4.2rem"/></label>
+          <label class="hint">H <input type="number" id="fovH" value="720" min="1" step="1" style="width:4.2rem"/></label>
+          <label class="hint">fx <input type="number" id="fovFx" value="650" min="1" step="0.1" style="width:4.5rem" title="焦距像素 fx"/></label>
+          <label class="hint">fy <input type="number" id="fovFy" value="650" min="1" step="0.1" style="width:4.5rem" title="焦距像素 fy"/></label>
+        </div>
+        <div class="row fov-res-row">
+          <label class="hint">HFOV° <input type="number" id="fovHdeg" value="" step="0.1" style="width:4.2rem" placeholder="auto"/></label>
+          <label class="hint">VFOV° <input type="number" id="fovVdeg" value="" step="0.1" style="width:4.2rem" placeholder="auto"/></label>
+          <button type="button" class="ghost compact" id="btnFovFromFx" title="用 W/H/fx/fy 填入 H/V">由焦距算</button>
+        </div>
+        <label class="hint">档位
+          <select id="fovModeSelect" style="width:100%;margin-top:0.25rem"></select>
+        </label>
+        <div class="ip-row" title="镜头中心 tool-frame mm">
+          <span class="k">LENS</span>
+          <input type="text" class="v" id="fovLens" placeholder="-2.16, 96, 123" autocomplete="off"/>
+        </div>
+        <div class="ip-row" title="光轴单位向量">
+          <span class="k">LOOK</span>
+          <input type="text" class="v" id="fovLook" placeholder="0, -0.81, 0.58" autocomplete="off"/>
+        </div>
+        <div class="ip-row" title="相机右方向单位向量">
+          <span class="k">RIGHT</span>
+          <input type="text" class="v" id="fovRight" placeholder="-1, 0, 0" autocomplete="off"/>
+        </div>
+        <div class="row conn-row">
+          <button type="button" class="ok" id="btnFovAnalyze">分析</button>
+          <button type="button" class="ghost" id="btnFovReset">恢复默认</button>
+        </div>
+        <p class="hint" id="fovHint">选择已装相机的 Cell 后可分析</p>
+        <pre id="fovResult" class="fov-result" aria-live="polite"></pre>
       </div>
     </aside>
     <section class="panel" id="stageWrap">
@@ -3056,6 +3113,7 @@ PAGE = r"""<!DOCTYPE html>
         renderArmList();
         loadModel(a);
         renderControls();
+        syncFovPanel();
         paintConn();
         paintRemoteHint();
         paintRead();
@@ -3064,6 +3122,180 @@ PAGE = r"""<!DOCTYPE html>
       box.appendChild(b);
     });
     paintConn();
+  }
+
+  function parseVec3(text) {
+    const parts = String(text || '').split(/[,\s]+/).filter(Boolean).map(Number);
+    if (parts.length !== 3 || parts.some((x) => !Number.isFinite(x))) return null;
+    return parts;
+  }
+
+  function cameraEnabled(arm) {
+    return !!(arm && arm.camera && arm.camera.enabled);
+  }
+
+  function fillFovForm(cam) {
+    if (!cam) return;
+    $('fovModel').value = cam.camera_model || 'D405';
+    const modes = Array.isArray(cam.modes) ? cam.modes : [];
+    const sel = $('fovModeSelect');
+    sel.innerHTML = '';
+    modes.forEach((m, i) => {
+      const opt = document.createElement('option');
+      opt.value = String(i);
+      opt.textContent = (m.id || ('mode' + i)) + (m.label ? (' · ' + m.label) : '');
+      sel.appendChild(opt);
+    });
+    const mi = Math.max(0, Math.min(modes.length - 1, Number(sel.value) || 0));
+    applyFovModeFields(modes[mi] || {});
+    if (Array.isArray(cam.lens)) $('fovLens').value = cam.lens.map((x) => Number(x)).join(', ');
+    if (Array.isArray(cam.look)) $('fovLook').value = cam.look.map((x) => Number(x)).join(', ');
+    if (Array.isArray(cam.right)) $('fovRight').value = cam.right.map((x) => Number(x)).join(', ');
+    $('fovHint').textContent = cam.notes || '可改分辨率 / fx·fy / H·V 后点分析';
+    $('fovResult').textContent = '';
+  }
+
+  function applyFovModeFields(m) {
+    if (!m) return;
+    if (m.width != null) $('fovW').value = m.width;
+    if (m.height != null) $('fovH').value = m.height;
+    if (m.fx != null) $('fovFx').value = m.fx;
+    if (m.fy != null) $('fovFy').value = m.fy;
+    $('fovHdeg').value = (m.H_deg != null && m.H_deg !== '') ? m.H_deg : '';
+    $('fovVdeg').value = (m.V_deg != null && m.V_deg !== '') ? m.V_deg : '';
+  }
+
+  function syncFovPanel() {
+    const arm = activeArm();
+    const block = $('fovBlock');
+    if (!cameraEnabled(arm)) {
+      block.hidden = true;
+      return;
+    }
+    block.hidden = false;
+    fillFovForm(arm.camera);
+  }
+
+  function fovDegFromFx() {
+    const W = Number($('fovW').value);
+    const H = Number($('fovH').value);
+    const fx = Number($('fovFx').value);
+    const fy = Number($('fovFy').value);
+    if (!(W > 0 && H > 0 && fx > 0 && fy > 0)) {
+      toast('W/H/fx/fy 需为正数');
+      return;
+    }
+    const hDeg = 2 * Math.atan(W / (2 * fx)) * (180 / Math.PI);
+    const vDeg = 2 * Math.atan(H / (2 * fy)) * (180 / Math.PI);
+    $('fovHdeg').value = hDeg.toFixed(2);
+    $('fovVdeg').value = vDeg.toFixed(2);
+  }
+
+  function buildFovOverrideFromForm(arm) {
+    const cam = arm.camera || {};
+    const modes = Array.isArray(cam.modes) ? cam.modes.map((m) => ({ ...m })) : [];
+    const idx = Math.max(0, Math.min(modes.length - 1, Number($('fovModeSelect').value) || 0));
+    const Hraw = String($('fovHdeg').value || '').trim();
+    const Vraw = String($('fovVdeg').value || '').trim();
+    const mode = {
+      ...(modes[idx] || { id: 'custom', label: '自定义' }),
+      id: (modes[idx] && modes[idx].id) || 'custom',
+      width: Number($('fovW').value),
+      height: Number($('fovH').value),
+      fx: Number($('fovFx').value),
+      fy: Number($('fovFy').value),
+    };
+    if (Hraw !== '' && Vraw !== '') {
+      mode.H_deg = Number(Hraw);
+      mode.V_deg = Number(Vraw);
+    } else {
+      delete mode.H_deg;
+      delete mode.V_deg;
+    }
+    // Analyze the edited mode first, keep other YAML modes for comparison
+    const rest = modes.filter((_, i) => i !== idx);
+    const lens = parseVec3($('fovLens').value);
+    const look = parseVec3($('fovLook').value);
+    const right = parseVec3($('fovRight').value);
+    if (!lens || !look || !right) throw new Error('LENS / LOOK / RIGHT 需为 3 个数字');
+    return {
+      enabled: true,
+      camera_model: String($('fovModel').value || 'D405').trim(),
+      lens,
+      look,
+      right,
+      modes: [mode, ...rest],
+      samples: cam.samples,
+      footprint_depths_mm: cam.footprint_depths_mm,
+      units: cam.units || 'mm',
+      frame: cam.frame,
+      notes: cam.notes,
+    };
+  }
+
+  function formatFovResult(payload) {
+    if (!payload || !payload.ok) return String((payload && payload.error) || '分析失败');
+    const r = payload.result || {};
+    const lines = [];
+    lines.push('推荐档: ' + (r.recommend_mode || '—'));
+    (r.modes || []).forEach((m) => {
+      const mark = m.recommend ? ' ★' : '';
+      lines.push(
+        m.id + mark + ': ' + m.in_count + '/' + m.n
+          + '  H×V=' + Number(m.H_deg).toFixed(1) + '×' + Number(m.V_deg).toFixed(1)
+          + (m.width ? ('  ' + m.width + '×' + m.height) : '')
+      );
+    });
+    lines.push('--- points ---');
+    (r.points || []).forEach((p) => {
+      const mid = (r.modes && r.modes[0] && r.modes[0].id) || '';
+      const ok = mid ? p.in_fov && p.in_fov[mid] : null;
+      lines.push(
+        (p.name || '?') + '  d=' + Number(p.d_mm).toFixed(1)
+          + ' az=' + Number(p.az_deg).toFixed(1)
+          + ' el=' + Number(p.el_deg).toFixed(1)
+          + (ok == null ? '' : (ok ? '  IN' : '  OUT'))
+      );
+    });
+    return lines.join('\\n');
+  }
+
+  async function runFovAnalyze() {
+    const arm = activeArm();
+    if (!cameraEnabled(arm)) { toast('本 Cell 未配置相机'); return; }
+    let body;
+    try {
+      body = { arm_id: arm.id, camera: buildFovOverrideFromForm(arm) };
+    } catch (e) {
+      toast(String(e && e.message || e));
+      return;
+    }
+    $('fovHint').textContent = '分析中…';
+    const r = await fetch('/api/fov/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((x) => x.json()).catch((e) => ({ ok: false, error: String(e) }));
+    if (r.ok && r.result) {
+      // Keep UI state on arm object for tab switches
+      arm.camera = { ...(arm.camera || {}), ...body.camera, enabled: true };
+    }
+    $('fovResult').textContent = formatFovResult(r);
+    $('fovHint').textContent = r.ok
+      ? ('完成 · 推荐 ' + ((r.result && r.result.recommend_mode) || '—'))
+      : (r.error || '失败');
+    if (!r.ok) toast(r.error || 'FOV 分析失败');
+  }
+
+  async function resetFovForm() {
+    const arm = activeArm();
+    if (!arm) return;
+    const r = await fetch('/api/fov/camera?arm_id=' + encodeURIComponent(arm.id)).then((x) => x.json());
+    if (r && r.camera) {
+      arm.camera = r.camera;
+      fillFovForm(r.camera);
+      $('fovHint').textContent = '已恢复为配置默认（含会话覆盖前请重启以清覆盖）';
+    }
   }
 
   function renderControls() {
@@ -3162,8 +3394,20 @@ PAGE = r"""<!DOCTYPE html>
     renderArmList();
     if (arms[0]) loadModel(arms[0]);
     renderControls();
+    syncFovPanel();
     paintConn();
     refreshArmMaxDeltaFromServer();
+
+    $('fovModeSelect').onchange = () => {
+      const arm = activeArm();
+      if (!cameraEnabled(arm)) return;
+      const modes = (arm.camera && arm.camera.modes) || [];
+      const i = Number($('fovModeSelect').value) || 0;
+      applyFovModeFields(modes[i] || {});
+    };
+    $('btnFovFromFx').onclick = () => fovDegFromFx();
+    $('btnFovAnalyze').onclick = () => runFovAnalyze();
+    $('btnFovReset').onclick = () => resetFovForm();
 
     $('btnMaxDeltaApply').onclick = () => applyArmMaxDelta();
     $('armMaxDelta').addEventListener('input', () => { maxDeltaDirty = true; });
@@ -3431,6 +3675,16 @@ class ArmTeleopSetpointBody(BaseModel):
     joints_rad: list[float]
 
 
+class FovAnalyzeBody(BaseModel):
+    arm_id: str
+    camera: dict[str, Any] | None = None
+
+
+class FovCameraBody(BaseModel):
+    arm_id: str
+    camera: dict[str, Any] = Field(default_factory=dict)
+
+
 def create_app(orch: Orchestrator) -> FastAPI:
     app = FastAPI(title="sensors-arm", docs_url="/api/docs")
     assets = static_dir()
@@ -3547,6 +3801,22 @@ def create_app(orch: Orchestrator) -> FastAPI:
     @app.post("/api/arm/teleop-stream/setpoint")
     async def arm_teleop_stream_setpoint(body: ArmTeleopSetpointBody) -> dict[str, Any]:
         return orch.teleop_stream_setpoint(body.arm_id, body.joints_rad)
+
+    @app.get("/api/fov/camera")
+    async def fov_camera_get(arm_id: str) -> dict[str, Any]:
+        try:
+            cam = orch.arm_camera_get(arm_id)
+        except KeyError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=404)
+        return {"ok": True, "arm_id": arm_id, "camera": cam}
+
+    @app.post("/api/fov/camera")
+    async def fov_camera_set(body: FovCameraBody) -> dict[str, Any]:
+        return orch.arm_camera_set(body.arm_id, body.camera)
+
+    @app.post("/api/fov/analyze")
+    async def fov_analyze_api(body: FovAnalyzeBody) -> dict[str, Any]:
+        return await asyncio.to_thread(orch.arm_fov_analyze, body.arm_id, body.camera)
 
     @app.post("/api/shutdown")
     async def shutdown() -> dict[str, Any]:
