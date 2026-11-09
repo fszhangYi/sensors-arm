@@ -36,7 +36,7 @@ models:
     backend: elite
     kinematics: cs66_kinematics
     kinematics_profile: elite_cs66
-    urdf: /assets/models/cs66/cs66.urdf?v=cs66-efg-c65-3
+    urdf: /assets/models/cs66/cs66.urdf?v=cs66-efg-c65-d405-1
     joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
     joint_offset_rad: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     joint_signs: [1, 1, 1, 1, 1, 1]
@@ -53,7 +53,7 @@ models:
     backend: elite
     kinematics: cs66_kin_g26562
     kinematics_profile: elite_cs66
-    urdf: /assets/models/cs66/cs66.urdf?v=cs66-efg-c65-3
+    urdf: /assets/models/cs66/cs66.urdf?v=cs66-efg-c65-d405-1
     joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
     joint_offset_rad: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     joint_signs: [1, 1, 1, 1, 1, 1]
