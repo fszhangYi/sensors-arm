@@ -245,15 +245,15 @@ BUILTIN_MODELS: dict[str, ModelCatalogEntry] = {
         backend="elite",
         kinematics="cs66_kin_g26562",
         kinematics_profile="elite_cs66",
-        urdf="/assets/models/cs66/cs66.urdf?v=cs66-efg-c65-d405-1",
+        urdf="/assets/models/cs66/cs66_cell_c.urdf?v=cell-c-gripper-open-2",
         joint_names=["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"],
         joint_offset_rad=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         joint_signs=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
         mirror_y=False,
         gripper_rpy=[0.0, 0.0, 3.141592653589793],
         notes=(
-            "Cell C copy of CS66 visuals/SDK path; FK/IK=sensors.cs66_kin_g26562/elite_cs66 "
-            "(G26562 teach pairs 2026-10-27). Viz EOAT: gripper +180° about tool Z."
+            "Cell C: no KWR75 (EFG on flange) + fingertips/D405; "
+            "FK/IK=sensors.cs66_kin_g26562/elite_cs66. Viz EOAT: gripper +180° about tool Z."
         ),
     ),
     "stub_6dof": ModelCatalogEntry(

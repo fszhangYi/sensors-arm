@@ -64,7 +64,8 @@ arms:
     write_agent: arm-c-write
     # Home joints (rad); FK/IK = cs66_kin_g26562.
     home_joints_rad: [2.8695, -1.9539, 1.8019, -1.6618, 4.7475, -0.0275]
-    tcp_xyz: [0.0, 0.0, 0.1505]
+    # Flange→EFG tip (no KWR75): ≈0.117 m
+    tcp_xyz: [0.0, 0.0, 0.117]
     # Wrist D405 on EFG-C65 tooling — FOV defaults (tool frame, mm).
     # Extrinsics are mesh-heuristic; tune in UI (resolution / fx / FOV) as needed.
     camera:

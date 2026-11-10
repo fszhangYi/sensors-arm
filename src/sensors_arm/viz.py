@@ -763,6 +763,22 @@ PAGE = r"""<!DOCTYPE html>
     .ip-row.max-delta-row button {
       flex: 0 0 auto; padding: 0.28rem 0.55rem; font-size: 0.72rem;
     }
+    .grip-open-block {
+      margin-top: 0.85rem;
+      padding: 0.55rem 0.6rem;
+      border-radius: 10px;
+      border: 1px solid rgba(120,160,200,0.16);
+      background: rgba(0,0,0,0.18);
+    }
+    .grip-open-block[hidden] { display: none !important; }
+    .grip-open-row {
+      display: flex; align-items: center; gap: 0.45rem; margin-top: 0.35rem;
+    }
+    .grip-open-row input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); }
+    .grip-open-val {
+      min-width: 3.6rem; text-align: right;
+      font-family: "IBM Plex Mono", monospace; font-size: 0.78rem; color: var(--spark);
+    }
     @keyframes toastIn {
       from { opacity: 0; transform: translateY(8px); }
       to { opacity: 1; transform: translateY(0); }
@@ -921,6 +937,16 @@ PAGE = r"""<!DOCTYPE html>
         <button type="button" class="compact" id="btnFillAbs">填入下发</button>
         <span class="hint" id="copyHint"></span>
       </div>
+      <div class="grip-open-block" id="gripOpenBlock" hidden>
+        <strong style="font-size:0.82rem">夹爪开度</strong>
+        <p class="hint" id="gripOpenHint" style="margin:0.25rem 0 0">仅当 URDF 含 gripper_opening（如 Cell C）时可用；A/B 无此关节则隐藏。</p>
+        <div class="grip-open-row">
+          <span class="hint" style="min-width:2.2rem">闭</span>
+          <input type="range" id="gripOpenSlider" min="0" max="33" step="0.5" value="0" aria-label="夹爪开度毫米"/>
+          <span class="hint" style="min-width:2.2rem">开</span>
+          <span class="grip-open-val" id="gripOpenVal">0.0 mm</span>
+        </div>
+      </div>
       <h2 style="margin-top:1.15rem">Write</h2>
       <div class="row">
         <button type="button" class="ok" id="btnArm">Arm</button>
@@ -962,6 +988,10 @@ PAGE = r"""<!DOCTYPE html>
   let robot = null;
   let scene, camera, renderer, clock, controls;
   let loadToken = 0;
+  /** Per-arm gripper opening (meters). Only applied when URDF has gripper_opening. */
+  const gripperOpenByArm = {};
+  const GRIP_OPEN_JOINT = 'gripper_opening';
+  const GRIP_OPEN_MIMIC = 'gripper_finger_r';
   let absRamp = { enabled: false, phase: 'idle', params: {} };
   let absTimingSeeded = false;
   let tcpMarker = null;
@@ -2973,6 +3003,7 @@ PAGE = r"""<!DOCTYPE html>
     if (flangeMarker) flangeMarker.visible = false;
     hasTcp = false;
     if (robot) { scene.remove(robot); robot = null; }
+    syncGripperOpenUi();
   }
 
   function softMaterials(root) {
@@ -2995,6 +3026,79 @@ PAGE = r"""<!DOCTYPE html>
       const t = (j && (j.jointType || j.type) || '').toLowerCase();
       return t === 'revolute' || t === 'continuous' || t === 'prismatic';
     });
+  }
+
+  function gripperOpenJoint(robotRoot) {
+    const joints = robotRoot && robotRoot.joints;
+    if (!joints) return null;
+    const j = joints[GRIP_OPEN_JOINT];
+    if (!j || typeof j.setJointValue !== 'function') return null;
+    const t = String(j.jointType || j.type || '').toLowerCase();
+    if (t && t !== 'prismatic') return null;
+    return j;
+  }
+
+  function syncGripperOpenUi() {
+    const block = $('gripOpenBlock');
+    const slider = $('gripOpenSlider');
+    const valEl = $('gripOpenVal');
+    const hint = $('gripOpenHint');
+    if (!block || !slider) return;
+    const arm = activeArm();
+    const j = gripperOpenJoint(robot);
+    if (!arm || !j) {
+      block.hidden = true;
+      return;
+    }
+    block.hidden = false;
+    const lo = (j.limit && Number.isFinite(Number(j.limit.lower))) ? Number(j.limit.lower) : 0;
+    const hi = (j.limit && Number.isFinite(Number(j.limit.upper))) ? Number(j.limit.upper) : 0.033;
+    const loMm = lo * 1000;
+    const hiMm = hi * 1000;
+    slider.min = String(loMm);
+    slider.max = String(hiMm);
+    slider.step = hiMm > 20 ? '0.5' : '0.1';
+    let cur = gripperOpenByArm[arm.id];
+    if (!Number.isFinite(cur)) cur = lo;
+    cur = Math.max(lo, Math.min(hi, cur));
+    gripperOpenByArm[arm.id] = cur;
+    slider.value = String(cur * 1000);
+    if (valEl) valEl.textContent = (cur * 1000).toFixed(1) + ' mm';
+    if (hint) {
+      hint.textContent = '单侧开度 0…' + hiMm.toFixed(0)
+        + ' mm（总开度约 ×2）；仅可视化，不写臂。';
+    }
+  }
+
+  function applyGripperOpening() {
+    const arm = activeArm();
+    const j = gripperOpenJoint(robot);
+    if (!arm || !j) return;
+    const lo = (j.limit && Number.isFinite(Number(j.limit.lower))) ? Number(j.limit.lower) : 0;
+    const hi = (j.limit && Number.isFinite(Number(j.limit.upper))) ? Number(j.limit.upper) : 0.033;
+    let v = gripperOpenByArm[arm.id];
+    if (!Number.isFinite(v)) v = lo;
+    v = Math.max(lo, Math.min(hi, v));
+    gripperOpenByArm[arm.id] = v;
+    j.setJointValue(v);
+    // Explicitly drive mimic target in case loader mimic wiring is inactive.
+    const jr = robot.joints && robot.joints[GRIP_OPEN_MIMIC];
+    if (jr && typeof jr.setJointValue === 'function') jr.setJointValue(v);
+    if (robot.updateMatrixWorld) robot.updateMatrixWorld(true);
+    const slider = $('gripOpenSlider');
+    const valEl = $('gripOpenVal');
+    if (slider && document.activeElement !== slider) slider.value = String(v * 1000);
+    if (valEl) valEl.textContent = (v * 1000).toFixed(1) + ' mm';
+  }
+
+  function onGripOpenSliderInput() {
+    const arm = activeArm();
+    const slider = $('gripOpenSlider');
+    if (!arm || !slider) return;
+    const mm = Number(slider.value);
+    if (!Number.isFinite(mm)) return;
+    gripperOpenByArm[arm.id] = mm / 1000.0;
+    applyGripperOpening();
   }
 
   /** Catalog ``gripper_rpy`` [rx,ry,rz] rad (URDF XYZ) — assembly-only mesh twist. */
@@ -3045,6 +3149,7 @@ PAGE = r"""<!DOCTYPE html>
     $('viewTitle').textContent = (arm.brand || '') + ' · ' + (arm.product || arm.model);
     if (!arm.urdf) {
       $('viewHint').textContent = '该型号无 URDF（stub）— 仅关节条显示。可在 models_catalog.yaml 绑定网格。';
+      syncGripperOpenUi();
       return;
     }
     if (typeof URDFLoader === 'undefined') {
@@ -3069,12 +3174,15 @@ PAGE = r"""<!DOCTYPE html>
       $('viewHint').textContent = (arm.label || arm.id) + ' · ' + arm.model
         + ' · joints[' + keys.join(',') + ']'
         + ' · 拖拽旋转 / 琥珀球 IK · TCP 轨迹自动落点';
+      syncGripperOpenUi();
       paintJoints();
+      applyGripperOpening();
       // Prefer FK pose; fall back to URDF tip if FK warm/profile unavailable.
       syncTcpMarkerFromLive();
     }, undefined, (err) => {
       if (token !== loadToken) return;
       $('viewHint').textContent = 'URDF 失败: ' + (err && err.message ? err.message : err);
+      syncGripperOpenUi();
     });
   }
 
@@ -3088,10 +3196,11 @@ PAGE = r"""<!DOCTYPE html>
     for (let i = 0; i < Math.min(6, j.length, names.length); i++) {
       const joint = robot.joints[names[i]];
       if (!joint || typeof joint.setJointValue !== 'function') continue;
-      // SolidWorks export sometimes ships limit lower=upper=0; widen for viz.
+      // SolidWorks export sometimes ships limit lower=upper=0; fall back to teach ±363°.
       if (joint.limit && Number(joint.limit.lower) === 0 && Number(joint.limit.upper) === 0) {
-        joint.limit.lower = -Math.PI * 2;
-        joint.limit.upper = Math.PI * 2;
+        const teachSoft = 363 * Math.PI / 180;
+        joint.limit.lower = -teachSoft;
+        joint.limit.upper = teachSoft;
       }
       const q = (signs[i] == null ? 1 : Number(signs[i])) * (Number(j[i]) - Number(offs[i] || 0));
       joint.setJointValue(q);
@@ -3104,11 +3213,18 @@ PAGE = r"""<!DOCTYPE html>
   function paintJoints() {
     if ((tcpDragActive || tcpPreviewHold) && Array.isArray(dragPreviewJoints)) {
       paintJointsFromArray(dragPreviewJoints);
+      applyGripperOpening();
       return;
     }
-    if (tcpPreviewHold) return;
+    if (tcpPreviewHold) {
+      applyGripperOpening();
+      return;
+    }
     const arm = activeArm();
-    if (!arm || !robot || !robot.joints) return;
+    if (!arm || !robot || !robot.joints) {
+      syncGripperOpenUi();
+      return;
+    }
     const rst = remoteState(arm.id);
     let j = null;
     if (rst && rst.on && Array.isArray(rst.joints)) {
@@ -3117,13 +3233,16 @@ PAGE = r"""<!DOCTYPE html>
       const fr = framesByAgent[arm.read_agent];
       j = fr && fr.payload && fr.payload.joints_rad;
     }
-    if (!Array.isArray(j)) return;
-    const names = resolveJointNames(arm);
-    const applied = paintJointsFromArray(j);
-    if (applied === 0 && names.length) {
-      $('viewHint').textContent = '关节未匹配: want=' + names.join(',')
-        + ' have=' + Object.keys(robot.joints).join(',');
+    if (Array.isArray(j)) {
+      const names = resolveJointNames(arm);
+      const applied = paintJointsFromArray(j);
+      if (applied === 0 && names.length) {
+        $('viewHint').textContent = '关节未匹配: want=' + names.join(',')
+          + ' have=' + Object.keys(robot.joints).join(',');
+      }
     }
+    // Re-apply EOAT opening after arm joints (A/B: no-op if joint missing).
+    applyGripperOpening();
     // After joints update, refresh TCP ball (FK or URDF tip).
     if (!tcpDragActive && !tcpPreviewHold) syncTcpMarkerFromLive();
   }
@@ -3543,6 +3662,13 @@ PAGE = r"""<!DOCTYPE html>
     $('btnFovAnalyze').onclick = () => runFovAnalyze();
     $('btnFovExport').onclick = () => runFovExport();
     $('btnFovReset').onclick = () => resetFovForm();
+
+    const gripSlider = $('gripOpenSlider');
+    if (gripSlider) {
+      gripSlider.addEventListener('input', onGripOpenSliderInput);
+      gripSlider.addEventListener('change', onGripOpenSliderInput);
+    }
+    syncGripperOpenUi();
 
     $('btnMaxDeltaApply').onclick = () => applyArmMaxDelta();
     $('armMaxDelta').addEventListener('input', () => { maxDeltaDirty = true; });

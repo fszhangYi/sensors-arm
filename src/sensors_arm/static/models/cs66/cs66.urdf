@@ -4,7 +4,11 @@
      For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
 <!-- Kinematic joint origins rebuilt 2026-10-15 from sensors.cs66_kinematics
      profile elite_cs66 (teach MDH). Meshes unchanged (SolidWorks export).
-     EOAT: KWR75 + EFG-C65 static stack after link6. -->
+     EOAT: KWR75 + EFG-C65 static stack after link6.
+     Revolute joint limits/vel from cs66_kinematics elite_cs66 soft_limits_deg
+     (±363°) and joint_vel_max_deg_s (teach).
+     Effort J1-J3=150, J4-J6=28 Nm from Elite ROS2 config/cs66/joint_limits.yaml
+     (not teach pendant; teach has no torque page). -->
 <robot
   name="CS66urdf">
   <link
@@ -99,7 +103,7 @@
       link="link1" />
     <axis
       xyz="0 0 1" />
-    <limit lower="-6.28318530718" upper="6.28318530718" effort="150" velocity="3.14" />
+    <limit lower="-6.33554518474" upper="6.33554518474" effort="150" velocity="2.61799387799" />
   </joint>
   <link
     name="link2">
@@ -153,7 +157,7 @@
       link="link2" />
     <axis
       xyz="0 0 1" />
-    <limit lower="-6.28318530718" upper="6.28318530718" effort="150" velocity="3.14" />
+    <limit lower="-6.33554518474" upper="6.33554518474" effort="150" velocity="2.61799387799" />
   </joint>
   <link
     name="link3">
@@ -207,7 +211,7 @@
       link="link3" />
     <axis
       xyz="0 0 1" />
-    <limit lower="-6.28318530718" upper="6.28318530718" effort="150" velocity="3.14" />
+    <limit lower="-6.33554518474" upper="6.33554518474" effort="150" velocity="2.86233997327" />
   </joint>
   <link
     name="link4">
@@ -261,7 +265,7 @@
       link="link4" />
     <axis
       xyz="0 0 1" />
-    <limit lower="-6.28318530718" upper="6.28318530718" effort="150" velocity="3.14" />
+    <limit lower="-6.33554518474" upper="6.33554518474" effort="28" velocity="3.92699081699" />
   </joint>
   <link
     name="link5">
@@ -315,7 +319,7 @@
       link="link5" />
     <axis
       xyz="0 0 1" />
-    <limit lower="-6.28318530718" upper="6.28318530718" effort="150" velocity="3.14" />
+    <limit lower="-6.33554518474" upper="6.33554518474" effort="28" velocity="3.92699081699" />
   </joint>
   <link
     name="link6">
@@ -369,7 +373,7 @@
       link="link6" />
     <axis
       xyz="0 0 1" />
-    <limit lower="-6.28318530718" upper="6.28318530718" effort="150" velocity="3.14" />
+    <limit lower="-6.33554518474" upper="6.33554518474" effort="28" velocity="3.92699081699" />
   </joint>
 
   <!-- EE: KWR75 FT + EFG-C65 gripper (static viz). CAD: cad/EFG-C65.STEP -->
