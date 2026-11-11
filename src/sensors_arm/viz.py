@@ -240,6 +240,45 @@ PAGE = r"""<!DOCTYPE html>
       vertical-align: middle;
     }
     .fov-res-row { flex-wrap: wrap; gap: 0.35rem 0.55rem; margin: 0.35rem 0; }
+    .fov-vec-block {
+      margin: 0.35rem 0 0.55rem;
+      padding: 0.45rem 0.6rem;
+      border-radius: 10px;
+      border: 1px solid rgba(120,160,200,0.16);
+      background: rgba(0,0,0,0.22);
+    }
+    .fov-vec-block .fov-vec-title {
+      color: var(--muted);
+      font-size: 0.72rem;
+      letter-spacing: 0.04em;
+      margin: 0 0 0.35rem;
+    }
+    .fov-vec-row {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem 0.55rem;
+      margin: 0.2rem 0;
+    }
+    .fov-vec-row label.hint { display: inline-flex; align-items: center; gap: 0.25rem; }
+    .fov-vec-row input[type="number"] {
+      width: 4.6rem;
+      background: transparent;
+      border: 1px solid rgba(120,160,200,0.22);
+      border-radius: 6px;
+      color: var(--text);
+      padding: 0.15rem 0.3rem;
+    }
+    .fov-fields.is-locked input,
+    .fov-fields.is-locked select,
+    .fov-fields.is-locked textarea,
+    .fov-fields.is-locked button:not(#btnFovUnlock):not(#btnFovAnalyze):not(#btnFovExport) {
+      opacity: 0.55;
+      pointer-events: none;
+    }
+    .fov-fields.is-locked #btnFovUnlock,
+    .fov-fields.is-locked #btnFovAnalyze,
+    .fov-fields.is-locked #btnFovExport {
+      opacity: 1;
+      pointer-events: auto;
+    }
     .fov-result {
       margin: 0.45rem 0 0;
       padding: 0.5rem 0.6rem;
@@ -849,28 +888,42 @@ PAGE = r"""<!DOCTYPE html>
           <label class="hint">档位
             <select id="fovModeSelect" style="width:100%;margin-top:0.25rem"></select>
           </label>
-          <div class="ip-row" title="镜头中心 tool-frame mm">
-            <span class="k">LENS</span>
-            <input type="text" class="v" id="fovLens" placeholder="-2.16, 96, 123" autocomplete="off"/>
+          <div class="fov-vec-block" title="镜头中心 tool-frame mm">
+            <p class="fov-vec-title">LENS（工具系 mm）</p>
+            <div class="fov-vec-row">
+              <label class="hint">X <input type="number" id="fovLensX" step="0.001" value="0"/></label>
+              <label class="hint">Y <input type="number" id="fovLensY" step="0.001" value="0"/></label>
+              <label class="hint">Z <input type="number" id="fovLensZ" step="0.001" value="0"/></label>
+            </div>
           </div>
-          <div class="ip-row" title="光轴单位向量">
-            <span class="k">LOOK</span>
-            <input type="text" class="v" id="fovLook" placeholder="0, -0.81, 0.58" autocomplete="off"/>
+          <div class="fov-vec-block" title="光轴单位向量">
+            <p class="fov-vec-title">LOOK（单位向量）</p>
+            <div class="fov-vec-row">
+              <label class="hint">X <input type="number" id="fovLookX" step="0.0001" value="0"/></label>
+              <label class="hint">Y <input type="number" id="fovLookY" step="0.0001" value="0"/></label>
+              <label class="hint">Z <input type="number" id="fovLookZ" step="0.0001" value="1"/></label>
+            </div>
           </div>
-          <div class="ip-row" title="相机右方向单位向量">
-            <span class="k">RIGHT</span>
-            <input type="text" class="v" id="fovRight" placeholder="-1, 0, 0" autocomplete="off"/>
+          <div class="fov-vec-block" title="相机右方向单位向量">
+            <p class="fov-vec-title">RIGHT（单位向量）</p>
+            <div class="fov-vec-row">
+              <label class="hint">X <input type="number" id="fovRightX" step="0.0001" value="1"/></label>
+              <label class="hint">Y <input type="number" id="fovRightY" step="0.0001" value="0"/></label>
+              <label class="hint">Z <input type="number" id="fovRightZ" step="0.0001" value="0"/></label>
+            </div>
           </div>
           <label class="hint">采样点（STL 同步后更新，只读）
             <textarea id="fovSamples" readonly rows="6" style="width:100%;margin-top:0.25rem;font-family:IBM Plex Mono,monospace;font-size:0.68rem;resize:vertical;background:rgba(0,0,0,0.28);color:var(--muted);border:1px solid rgba(120,160,200,0.16);border-radius:8px;padding:0.4rem 0.5rem"></textarea>
           </label>
           <div class="row conn-row">
+            <button type="button" class="ok" id="btnFovLock" title="锁定参数并下发到 Gazebo；锁定后才能分析">锁定并下发</button>
+            <button type="button" class="ghost" id="btnFovUnlock" title="解锁后可继续改参数">解锁</button>
             <button type="button" class="ghost" id="btnFovSyncStl" title="从 D405/指尖 STL 的 AABB 重算 LENS/LOOK/RIGHT/采样点，并写回 YAML">同步 STL</button>
             <button type="button" class="ok" id="btnFovAnalyze">分析</button>
-            <button type="button" class="ok" id="btnFovExport" title="下载 ZIP：Markdown 报告 + 示意图 PNG + JSON">导出 ZIP</button>
+            <button type="button" class="ok" id="btnFovExport" title="录制腕部相机：夹爪指尖反复开合 → 下载 MP4">导出视频</button>
             <button type="button" class="ghost" id="btnFovReset">恢复默认</button>
           </div>
-          <p class="hint" id="fovHint">选择已装相机的 Cell 后可分析</p>
+          <p class="hint" id="fovHint">先调参数 → 锁定并下发 → 再分析；画布视锥随参数实时变</p>
           <pre id="fovResult" class="fov-result" aria-live="polite"></pre>
         </div>
       </div>
@@ -996,6 +1049,11 @@ PAGE = r"""<!DOCTYPE html>
   let absTimingSeeded = false;
   let tcpMarker = null;
   let flangeMarker = null;
+  let fovFrustumLines = null;
+  let fovFrustumFill = null;
+  let fovFrustumParent = null;
+  /** Per-arm: camera params locked & pushed to Gazebo. */
+  const fovLockedByArm = {};
   let tcpRotGizmo = null;
   let tcpRotRings = [];
   let tcpDragActive = false;
@@ -2991,6 +3049,7 @@ PAGE = r"""<!DOCTYPE html>
       if (!tcpDragActive && !tcpPreviewHold) syncTcpMarkerFromLive();
       if (tcpMarker && tcpMarker.visible) updateTcpRotGizmoScale();
       if (controls && controls.enableDamping) controls.update();
+      updateFovFrustumFromForm();
       renderer.render(scene, camera);
     })();
   }
@@ -3002,6 +3061,7 @@ PAGE = r"""<!DOCTYPE html>
     setTcpRotGizmoVisible(false);
     if (flangeMarker) flangeMarker.visible = false;
     hasTcp = false;
+    clearFovFrustum();
     if (robot) { scene.remove(robot); robot = null; }
     syncGripperOpenUi();
   }
@@ -3066,7 +3126,7 @@ PAGE = r"""<!DOCTYPE html>
     if (valEl) valEl.textContent = (cur * 1000).toFixed(1) + ' mm';
     if (hint) {
       hint.textContent = '单侧开度 0…' + hiMm.toFixed(0)
-        + ' mm（总开度约 ×2）；仅可视化，不写臂。';
+        + ' mm（总开度约 ×2）；写入 arm/Gazebo（gripper_opening）。';
     }
   }
 
@@ -3091,6 +3151,63 @@ PAGE = r"""<!DOCTYPE html>
     if (valEl) valEl.textContent = (v * 1000).toFixed(1) + ' mm';
   }
 
+  let _gripSendTimer = null;
+  let _gripSendInflight = false;
+  let _gripSendQueued = false;
+
+  function currentArmJoints6(arm) {
+    if (!arm) return null;
+    const rst = remoteState(arm.id);
+    if (rst && rst.on && Array.isArray(rst.joints) && rst.joints.length >= 6) {
+      return rst.joints.slice(0, 6).map(Number);
+    }
+    const fr = framesByAgent[arm.read_agent];
+    const j = fr && fr.payload && fr.payload.joints_rad;
+    if (Array.isArray(j) && j.length >= 6) return j.slice(0, 6).map(Number);
+    if (Array.isArray(arm.home_joints_rad) && arm.home_joints_rad.length >= 6) {
+      return arm.home_joints_rad.slice(0, 6).map(Number);
+    }
+    return null;
+  }
+
+  async function sendGripperOpeningToArm() {
+    const arm = activeArm();
+    if (!arm || !gripperOpenJoint(robot)) return;
+    const opening = gripperOpenByArm[arm.id];
+    if (!Number.isFinite(opening)) return;
+    const j6 = currentArmJoints6(arm);
+    if (!j6) {
+      const hint = $('gripOpenHint');
+      if (hint) hint.textContent = '无当前关节反馈，无法下发开合';
+      return;
+    }
+    if (_gripSendInflight) {
+      _gripSendQueued = true;
+      return;
+    }
+    _gripSendInflight = true;
+    try {
+      const joints = j6.concat([opening]);
+      const r = await fetch('/api/arm/command', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ arm_id: arm.id, joints_rad: joints }),
+      }).then((x) => x.json()).catch((e) => ({ ok: false, error: String(e) }));
+      const hint = $('gripOpenHint');
+      if (hint) {
+        hint.textContent = (r && r.ok)
+          ? ('已下发开合 ' + (opening * 1000).toFixed(1) + ' mm → Gazebo')
+          : ((r && (r.error || r.message)) || '开合下发失败');
+      }
+    } finally {
+      _gripSendInflight = false;
+      if (_gripSendQueued) {
+        _gripSendQueued = false;
+        sendGripperOpeningToArm();
+      }
+    }
+  }
+
   function onGripOpenSliderInput() {
     const arm = activeArm();
     const slider = $('gripOpenSlider');
@@ -3099,6 +3216,8 @@ PAGE = r"""<!DOCTYPE html>
     if (!Number.isFinite(mm)) return;
     gripperOpenByArm[arm.id] = mm / 1000.0;
     applyGripperOpening();
+    clearTimeout(_gripSendTimer);
+    _gripSendTimer = setTimeout(() => { sendGripperOpeningToArm(); }, 80);
   }
 
   /** Catalog ``gripper_rpy`` [rx,ry,rz] rad (URDF XYZ) — assembly-only mesh twist. */
@@ -3240,6 +3359,11 @@ PAGE = r"""<!DOCTYPE html>
         $('viewHint').textContent = '关节未匹配: want=' + names.join(',')
           + ' have=' + Object.keys(robot.joints).join(',');
       }
+      // Keep slider / Gazebo gripper in sync when feedback includes gripper_opening.
+      const slider = $('gripOpenSlider');
+      if (j.length >= 7 && Number.isFinite(Number(j[6])) && document.activeElement !== slider) {
+        gripperOpenByArm[arm.id] = Number(j[6]);
+      }
     }
     // Re-apply EOAT opening after arm joints (A/B: no-op if joint missing).
     applyGripperOpening();
@@ -3290,8 +3414,35 @@ PAGE = r"""<!DOCTYPE html>
     return parts;
   }
 
+  function readFovVec3(prefix) {
+    const x = Number($(prefix + 'X') && $(prefix + 'X').value);
+    const y = Number($(prefix + 'Y') && $(prefix + 'Y').value);
+    const z = Number($(prefix + 'Z') && $(prefix + 'Z').value);
+    if (![x, y, z].every(Number.isFinite)) return null;
+    return [x, y, z];
+  }
+
+  function writeFovVec3(prefix, arr) {
+    if (!Array.isArray(arr) || arr.length < 3) return;
+    if ($(prefix + 'X')) $(prefix + 'X').value = Number(arr[0]);
+    if ($(prefix + 'Y')) $(prefix + 'Y').value = Number(arr[1]);
+    if ($(prefix + 'Z')) $(prefix + 'Z').value = Number(arr[2]);
+  }
+
   function cameraEnabled(arm) {
     return !!(arm && arm.camera && arm.camera.enabled);
+  }
+
+  function isFovLocked(arm) {
+    const id = arm && arm.id;
+    return !!(id && fovLockedByArm[id]);
+  }
+
+  function setFovLockedUi(locked) {
+    const fields = $('fovFields');
+    if (fields) fields.classList.toggle('is-locked', !!locked);
+    if ($('btnFovLock')) $('btnFovLock').disabled = !!locked;
+    if ($('btnFovUnlock')) $('btnFovUnlock').disabled = !locked;
   }
 
   function fillFovForm(cam) {
@@ -3308,9 +3459,9 @@ PAGE = r"""<!DOCTYPE html>
     });
     const mi = Math.max(0, Math.min(modes.length - 1, Number(sel.value) || 0));
     applyFovModeFields(modes[mi] || {});
-    if (Array.isArray(cam.lens)) $('fovLens').value = cam.lens.map((x) => Number(x)).join(', ');
-    if (Array.isArray(cam.look)) $('fovLook').value = cam.look.map((x) => Number(x)).join(', ');
-    if (Array.isArray(cam.right)) $('fovRight').value = cam.right.map((x) => Number(x)).join(', ');
+    writeFovVec3('fovLens', cam.lens);
+    writeFovVec3('fovLook', cam.look);
+    writeFovVec3('fovRight', cam.right);
     const sampEl = $('fovSamples');
     if (sampEl) {
       const samples = Array.isArray(cam.samples) ? cam.samples : [];
@@ -3319,8 +3470,14 @@ PAGE = r"""<!DOCTYPE html>
         return (s.name || '?') + ' [' + (s.tag || '') + ']  ' + xyz;
       }).join(String.fromCharCode(10));
     }
-    $('fovHint').textContent = cam.notes || '可改分辨率 / fx·fy / H·V 后点分析';
+    const arm = activeArm();
+    const locked = isFovLocked(arm);
+    setFovLockedUi(locked);
+    $('fovHint').textContent = locked
+      ? '已锁定：可分析 / 导出。解锁后才能改参数。'
+      : (cam.notes || '调参后点「锁定并下发」，再分析。画布视锥实时跟随表单。');
     $('fovResult').textContent = '';
+    updateFovFrustumFromForm();
   }
 
   function applyFovModeFields(m) {
@@ -3393,16 +3550,23 @@ PAGE = r"""<!DOCTYPE html>
     }
     // Analyze the edited mode first, keep other YAML modes for comparison
     const rest = modes.filter((_, i) => i !== idx);
-    const lens = parseVec3($('fovLens').value);
-    const look = parseVec3($('fovLook').value);
-    const right = parseVec3($('fovRight').value);
-    if (!lens || !look || !right) throw new Error('LENS / LOOK / RIGHT 需为 3 个数字');
+    const lens = readFovVec3('fovLens');
+    const look = readFovVec3('fovLook');
+    const right = readFovVec3('fovRight');
+    if (!lens || !look || !right) throw new Error('LENS / LOOK / RIGHT 需为有效数字');
+    // up = right × look (tool-frame, matches optical Y = down = look × right)
+    const up = [
+      right[1] * look[2] - right[2] * look[1],
+      right[2] * look[0] - right[0] * look[2],
+      right[0] * look[1] - right[1] * look[0],
+    ];
     return {
       enabled: true,
       camera_model: String($('fovModel').value || 'D405').trim(),
       lens,
       look,
       right,
+      up,
       modes: [mode, ...rest],
       samples: cam.samples,
       footprint_depths_mm: cam.footprint_depths_mm,
@@ -3410,6 +3574,174 @@ PAGE = r"""<!DOCTYPE html>
       frame: cam.frame,
       notes: cam.notes,
     };
+  }
+
+  function resolveFovHvDeg() {
+    let hDeg = Number($('fovHdeg') && $('fovHdeg').value);
+    let vDeg = Number($('fovVdeg') && $('fovVdeg').value);
+    if (!(hDeg > 0 && vDeg > 0)) {
+      const W = Number($('fovW') && $('fovW').value);
+      const H = Number($('fovH') && $('fovH').value);
+      const fx = Number($('fovFx') && $('fovFx').value);
+      const fy = Number($('fovFy') && $('fovFy').value);
+      if (W > 0 && H > 0 && fx > 0 && fy > 0) {
+        hDeg = 2 * Math.atan(W / (2 * fx)) * (180 / Math.PI);
+        vDeg = 2 * Math.atan(H / (2 * fy)) * (180 / Math.PI);
+      }
+    }
+    if (!(hDeg > 0 && vDeg > 0)) return null;
+    return { hDeg, vDeg };
+  }
+
+  function ensureFovFrustum() {
+    if ((fovFrustumLines && fovFrustumFill) || !scene || typeof THREE === 'undefined') return;
+    if (!fovFrustumLines) {
+      const geo = new THREE.BufferGeometry();
+      const positions = new Float32Array(24 * 3); // 12 segments × 2 pts
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      const mat = new THREE.LineBasicMaterial({
+        color: 0xf07070,
+        transparent: true,
+        opacity: 0.85,
+        depthTest: true,
+      });
+      fovFrustumLines = new THREE.LineSegments(geo, mat);
+      fovFrustumLines.name = 'fov_frustum';
+      fovFrustumLines.frustumCulled = false;
+      fovFrustumLines.visible = false;
+      scene.add(fovFrustumLines);
+    }
+    if (!fovFrustumFill) {
+      const fillGeo = new THREE.BufferGeometry();
+      // 4 side faces + far face = 6 tris × 3 verts
+      const fillPos = new Float32Array(18 * 3);
+      fillGeo.setAttribute('position', new THREE.BufferAttribute(fillPos, 3));
+      const fillMat = new THREE.MeshBasicMaterial({
+        color: 0xf08080,
+        transparent: true,
+        opacity: 0.22,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      fovFrustumFill = new THREE.Mesh(fillGeo, fillMat);
+      fovFrustumFill.name = 'fov_frustum_fill';
+      fovFrustumFill.frustumCulled = false;
+      fovFrustumFill.visible = false;
+      fovFrustumFill.renderOrder = 1;
+      scene.add(fovFrustumFill);
+    }
+  }
+
+  function clearFovFrustum() {
+    if (fovFrustumLines && fovFrustumLines.parent) {
+      fovFrustumLines.parent.remove(fovFrustumLines);
+    }
+    if (fovFrustumFill && fovFrustumFill.parent) {
+      fovFrustumFill.parent.remove(fovFrustumFill);
+    }
+    fovFrustumParent = null;
+    if (fovFrustumLines && scene) {
+      scene.add(fovFrustumLines);
+      fovFrustumLines.visible = false;
+    }
+    if (fovFrustumFill && scene) {
+      scene.add(fovFrustumFill);
+      fovFrustumFill.visible = false;
+    }
+  }
+
+  function updateFovFrustumFromForm() {
+    if (!scene || typeof THREE === 'undefined') return;
+    ensureFovFrustum();
+    if (!fovFrustumLines || !fovFrustumFill) return;
+    const arm = activeArm();
+    if (!cameraEnabled(arm) || !robot) {
+      fovFrustumLines.visible = false;
+      fovFrustumFill.visible = false;
+      return;
+    }
+    const tip = findUrdfTcpObject();
+    if (!tip) {
+      fovFrustumLines.visible = false;
+      fovFrustumFill.visible = false;
+      return;
+    }
+    if (fovFrustumLines.parent !== tip) {
+      tip.add(fovFrustumLines);
+      tip.add(fovFrustumFill);
+      fovFrustumParent = tip;
+    }
+    const lensMm = readFovVec3('fovLens');
+    const look = readFovVec3('fovLook');
+    const right = readFovVec3('fovRight');
+    const hv = resolveFovHvDeg();
+    if (!lensMm || !look || !right || !hv) {
+      fovFrustumLines.visible = false;
+      fovFrustumFill.visible = false;
+      return;
+    }
+    const scale = 0.001; // mm → m (tool frame)
+    const ox = lensMm[0] * scale;
+    const oy = lensMm[1] * scale;
+    const oz = lensMm[2] * scale;
+    const ln = Math.hypot(look[0], look[1], look[2]) || 1;
+    const rn = Math.hypot(right[0], right[1], right[2]) || 1;
+    const fx = look[0] / ln, fy = look[1] / ln, fz = look[2] / ln;
+    const rx = right[0] / rn, ry = right[1] / rn, rz = right[2] / rn;
+    // down = look × right
+    let dx = fy * rz - fz * ry;
+    let dy = fz * rx - fx * rz;
+    let dz = fx * ry - fy * rx;
+    const dn = Math.hypot(dx, dy, dz) || 1;
+    dx /= dn; dy /= dn; dz /= dn;
+
+    const near = 0.02;
+    const far = 0.28;
+    const hN = near * Math.tan((hv.hDeg * Math.PI) / 360);
+    const vN = near * Math.tan((hv.vDeg * Math.PI) / 360);
+    const hF = far * Math.tan((hv.hDeg * Math.PI) / 360);
+    const vF = far * Math.tan((hv.vDeg * Math.PI) / 360);
+
+    function pt(depth, hs, vs) {
+      return [
+        ox + fx * depth + rx * hs + dx * vs,
+        oy + fy * depth + ry * hs + dy * vs,
+        oz + fz * depth + rz * hs + dz * vs,
+      ];
+    }
+    const o = [ox, oy, oz];
+    const npp = pt(near, hN, vN), npm = pt(near, hN, -vN);
+    const nmp = pt(near, -hN, vN), nmm = pt(near, -hN, -vN);
+    const fpp = pt(far, hF, vF), fpm = pt(far, hF, -vF);
+    const fmp = pt(far, -hF, vF), fmm = pt(far, -hF, -vF);
+    const segs = [
+      o, fpp, o, fpm, o, fmp, o, fmm,
+      fpp, fpm, fpm, fmm, fmm, fmp, fmp, fpp,
+      npp, npm, npm, nmm, nmm, nmp, nmp, npp,
+    ];
+    const arr = fovFrustumLines.geometry.attributes.position.array;
+    for (let i = 0; i < segs.length; i++) {
+      arr[i * 3] = segs[i][0];
+      arr[i * 3 + 1] = segs[i][1];
+      arr[i * 3 + 2] = segs[i][2];
+    }
+    fovFrustumLines.geometry.attributes.position.needsUpdate = true;
+    fovFrustumLines.geometry.computeBoundingSphere();
+    fovFrustumLines.visible = true;
+
+    const tris = [
+      o, fpp, fpm, o, fpm, fmm, o, fmm, fmp, o, fmp, fpp,
+      fpp, fpm, fmm, fpp, fmm, fmp,
+    ];
+    const fillArr = fovFrustumFill.geometry.attributes.position.array;
+    for (let i = 0; i < tris.length; i++) {
+      fillArr[i * 3] = tris[i][0];
+      fillArr[i * 3 + 1] = tris[i][1];
+      fillArr[i * 3 + 2] = tris[i][2];
+    }
+    fovFrustumFill.geometry.attributes.position.needsUpdate = true;
+    fovFrustumFill.geometry.computeBoundingSphere();
+    fovFrustumFill.visible = true;
   }
 
   function formatFovResult(payload) {
@@ -3439,9 +3771,53 @@ PAGE = r"""<!DOCTYPE html>
     return lines.join(String.fromCharCode(10));
   }
 
+  async function lockFovAndPush() {
+    const arm = activeArm();
+    if (!cameraEnabled(arm)) { toast('本 Cell 未配置相机'); return; }
+    let body;
+    try {
+      body = { arm_id: arm.id, camera: buildFovOverrideFromForm(arm) };
+    } catch (e) {
+      toast(String(e && e.message || e));
+      return;
+    }
+    $('fovHint').textContent = '正在锁定并下发 Gazebo…';
+    const r = await fetch('/api/fov/camera', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((x) => x.json()).catch((e) => ({ ok: false, error: String(e) }));
+    if (!(r && r.ok)) {
+      $('fovHint').textContent = (r && r.error) || '锁定下发失败';
+      toast((r && r.error) || '锁定失败');
+      return;
+    }
+    if (r.camera) arm.camera = { ...(arm.camera || {}), ...r.camera, enabled: true };
+    fovLockedByArm[arm.id] = true;
+    setFovLockedUi(true);
+    const gz = r.gazebo;
+    const hv = gz && gz.applied
+      ? ('H' + Number(gz.applied.h_deg || 0).toFixed(1) + '°/V' + Number(gz.applied.v_deg || 0).toFixed(1) + '°')
+      : '';
+    $('fovHint').textContent = '已锁定'
+      + (gz && gz.ok ? (' · 已下发 Gazebo' + (hv ? (' ' + hv) : '')) : (gz && gz.error ? (' · Gazebo: ' + gz.error) : ''));
+    toast('相机参数已锁定');
+    updateFovFrustumFromForm();
+  }
+
+  function unlockFovParams() {
+    const arm = activeArm();
+    if (!arm) return;
+    fovLockedByArm[arm.id] = false;
+    setFovLockedUi(false);
+    $('fovHint').textContent = '已解锁，可改参数；改完后需重新锁定才能分析。';
+    toast('已解锁');
+  }
+
   async function runFovAnalyze() {
     const arm = activeArm();
     if (!cameraEnabled(arm)) { toast('本 Cell 未配置相机'); return; }
+    if (!isFovLocked(arm)) { toast('请先「锁定并下发」再分析'); $('fovHint').textContent = '未锁定：不能分析'; return; }
     let body;
     try {
       body = { arm_id: arm.id, camera: buildFovOverrideFromForm(arm) };
@@ -3469,6 +3845,7 @@ PAGE = r"""<!DOCTYPE html>
   async function runFovExport() {
     const arm = activeArm();
     if (!cameraEnabled(arm)) { toast('本 Cell 未配置相机'); return; }
+    if (!isFovLocked(arm)) { toast('请先「锁定并下发」再导出'); $('fovHint').textContent = '未锁定：不能导出'; return; }
     let body;
     try {
       body = { arm_id: arm.id, camera: buildFovOverrideFromForm(arm) };
@@ -3476,7 +3853,8 @@ PAGE = r"""<!DOCTYPE html>
       toast(String(e && e.message || e));
       return;
     }
-    $('fovHint').textContent = '正在打包 ZIP（报告 + 示意图）…';
+    $('fovHint').textContent = '正在录制夹爪开合视频（腕部相机，约数秒）…';
+    toast('开始录制开合…');
     try {
       const resp = await fetch('/api/fov/export', {
         method: 'POST',
@@ -3486,15 +3864,18 @@ PAGE = r"""<!DOCTYPE html>
       const ctype = (resp.headers.get('content-type') || '').toLowerCase();
       if (!resp.ok || ctype.indexOf('application/json') >= 0) {
         const r = await resp.json().catch(() => ({ ok: false, error: 'export failed' }));
-        $('fovHint').textContent = r.error || '导出失败';
-        toast(r.error || '导出失败（若提示 matplotlib，请 pip install matplotlib）');
+        $('fovHint').textContent = r.error || '录制失败';
+        toast(r.error || '录制失败');
         return;
       }
       const blob = await resp.blob();
-      let fname = 'fov_export.zip';
+      let fname = 'gripper_open_close.mp4';
       const cd = resp.headers.get('content-disposition') || '';
       const m = /filename=\"?([^\";]+)\"?/i.exec(cd);
       if (m && m[1]) fname = m[1];
+      const hasVid = String(resp.headers.get('x-fov-has-video') || '') === '1'
+        || ctype.indexOf('video/') >= 0;
+      const warn = String(resp.headers.get('x-fov-warning') || '').trim();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -3503,13 +3884,17 @@ PAGE = r"""<!DOCTYPE html>
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      $('fovHint').textContent = '已下载 ' + fname;
-      toast('已导出 ' + fname);
-      // Also refresh text summary from analyze
-      runFovAnalyze();
+      if (hasVid) {
+        $('fovHint').textContent = '已下载 ' + fname + '（夹爪反复开合）';
+        toast('视频已导出');
+      } else {
+        $('fovHint').textContent = '已下载 ' + fname
+          + (warn ? ('：' + warn) : '');
+        toast('已下载');
+      }
     } catch (e) {
       $('fovHint').textContent = String(e && e.message || e);
-      toast('导出失败');
+      toast('录制失败');
     }
   }
 
@@ -3652,16 +4037,37 @@ PAGE = r"""<!DOCTYPE html>
 
     $('fovModeSelect').onchange = () => {
       const arm = activeArm();
-      if (!cameraEnabled(arm)) return;
+      if (!cameraEnabled(arm) || isFovLocked(arm)) return;
       const modes = (arm.camera && arm.camera.modes) || [];
       const i = Number($('fovModeSelect').value) || 0;
       applyFovModeFields(modes[i] || {});
+      updateFovFrustumFromForm();
     };
-    $('btnFovFromFx').onclick = () => fovDegFromFx();
+    $('btnFovFromFx').onclick = () => { if (!isFovLocked(activeArm())) { fovDegFromFx(); updateFovFrustumFromForm(); } };
+    $('btnFovLock').onclick = () => lockFovAndPush();
+    $('btnFovUnlock').onclick = () => unlockFovParams();
     $('btnFovSyncStl').onclick = () => runFovSyncStl();
     $('btnFovAnalyze').onclick = () => runFovAnalyze();
     $('btnFovExport').onclick = () => runFovExport();
-    $('btnFovReset').onclick = () => resetFovForm();
+    $('btnFovReset').onclick = () => {
+      const arm = activeArm();
+      if (arm) fovLockedByArm[arm.id] = false;
+      setFovLockedUi(false);
+      resetFovForm();
+    };
+    // Frustum follows form live; Gazebo only updates on 锁定.
+    [
+      'fovHdeg', 'fovVdeg', 'fovW', 'fovH', 'fovFx', 'fovFy',
+      'fovLensX', 'fovLensY', 'fovLensZ',
+      'fovLookX', 'fovLookY', 'fovLookZ',
+      'fovRightX', 'fovRightY', 'fovRightZ',
+    ].forEach((id) => {
+      const el = $(id);
+      if (!el) return;
+      el.addEventListener('input', () => { if (!isFovLocked(activeArm())) updateFovFrustumFromForm(); });
+      el.addEventListener('change', () => { if (!isFovLocked(activeArm())) updateFovFrustumFromForm(); });
+    });
+    setFovLockedUi(false);
 
     const gripSlider = $('gripOpenSlider');
     if (gripSlider) {
