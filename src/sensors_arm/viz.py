@@ -920,7 +920,7 @@ PAGE = r"""<!DOCTYPE html>
             <button type="button" class="ghost" id="btnFovUnlock" title="解锁后可继续改参数">解锁</button>
             <button type="button" class="ghost" id="btnFovSyncStl" title="从 D405/指尖 STL 的 AABB 重算 LENS/LOOK/RIGHT/采样点，并写回 YAML">同步 STL</button>
             <button type="button" class="ok" id="btnFovAnalyze">分析</button>
-            <button type="button" class="ok" id="btnFovExport" title="录制腕部相机：夹爪指尖反复开合 → 下载 MP4">导出视频</button>
+            <button type="button" class="ok" id="btnFovExport" title="导出 FOV 结果（产品仓为报告 ZIP；ROS/Gazebo 下为腕部开合视频）">导出</button>
             <button type="button" class="ghost" id="btnFovReset">恢复默认</button>
           </div>
           <p class="hint" id="fovHint">先调参数 → 锁定并下发 → 再分析；画布视锥随参数实时变</p>
